@@ -18,7 +18,6 @@ from lushu.services.trip_store import (
     CityRef,
     delete_trip,
     list_trips,
-    load_cities,
     load_trip,
     save_planned_trip,
     upsert_cities,

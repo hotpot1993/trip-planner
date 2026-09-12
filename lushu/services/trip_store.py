@@ -101,6 +101,19 @@ class StoredTransfer:
 
 
 @dataclass(frozen=True)
+class StoredBudgetItem:
+    """预算里的一条。"""
+
+    category: str
+    label: str
+    amount: float
+    currency: str
+    is_reference_price: bool
+    source: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class StoredTrip:
     """从表里读回来的完整行程。"""
 
@@ -369,6 +382,40 @@ def _transfer_label(transfer: TransferPlacementPlan) -> str:
     if chosen is None:
         return f"城际交通（{transfer.from_stay_seq}→{transfer.to_stay_seq}，暂无方案）"
     return f"{chosen.from_station} → {chosen.to_station} {chosen.service_no}"
+
+
+# ─── 预算 ────────────────────────────────────────────────────
+
+
+def load_budget(
+    trip_id: str, *, conn: sqlite3.Connection | None = None
+) -> list[StoredBudgetItem]:
+    """读回一份行程的预算项。城际交通与其余类别的拆分交给调用方——那是呈现方式，
+    不是存储的事。"""
+    owned = conn is None
+    active = conn or connect()
+    try:
+        rows = active.execute(
+            "SELECT category, label, amount, currency, is_reference_price, source, note "
+            "FROM budget_item WHERE trip_id = ? ORDER BY category, label",
+            (trip_id,),
+        ).fetchall()
+    finally:
+        if owned:
+            active.close()
+
+    return [
+        StoredBudgetItem(
+            category=row["category"],
+            label=row["label"],
+            amount=float(row["amount"]),
+            currency=row["currency"],
+            is_reference_price=bool(row["is_reference_price"]),
+            source=row["source"],
+            note=row["note"],
+        )
+        for row in rows
+    ]
 
 
 def set_status(trip_id: str, status: str, *, conn: sqlite3.Connection | None = None) -> None:

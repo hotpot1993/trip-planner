@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from lushu.domain.planned import PlannedTrip, StaySpec
 from lushu.engine import lookup_city
-from lushu.services import trip_service
+from lushu.services import transfer_service, trip_service, weather_service
 from lushu.services.trip_store import StoredTrip, TripSummary
 
 router = APIRouter(prefix="/api", tags=["行程"])
@@ -94,6 +94,79 @@ class StayOut(BaseModel):
     days: list[DayOut]
 
 
+class TransferOut(BaseModel):
+    """城际转移。它落在某一天上，但本身不是那天的一个事项。"""
+
+    id: str
+    from_city_name: str
+    to_city_name: str
+    day_index: int
+    day: date
+    mode: str
+    service_no: str | None = None
+    from_station: str | None = None
+    to_station: str | None = None
+    dep_time: str | None = None
+    arr_time: str | None = None
+    duration_min: int | None = None
+    price: float | None = None
+    price_source: str
+    # 估价必须让用户看得见，不能与实价长得一样
+    is_reference_price: bool
+    has_tickets: bool | None = None
+    advice_reason: str | None = None
+    note: str | None = None
+    alternatives: list[dict] = Field(default_factory=list)
+
+
+class BudgetItemOut(BaseModel):
+    category: str
+    label: str
+    amount: float
+    currency: str
+    is_reference_price: bool
+    source: str | None = None
+    note: str | None = None
+
+
+class BudgetPanelOut(BaseModel):
+    """预算面板。城际交通单独成栏（设计的明确要求）。"""
+
+    intercity: list[BudgetItemOut]
+    others: list[BudgetItemOut]
+    intercity_total: float
+    other_total: float
+    total: float
+    has_reference_prices: bool
+
+
+class DayWeatherOut(BaseModel):
+    date: date
+    text: str
+    night_text: str | None = None
+    temp_min: float | None = None
+    temp_max: float | None = None
+    temperature_text: str
+    precipitation_probability: float | None = None
+    is_bad_outdoor: bool
+
+
+class CityWeatherOut(BaseModel):
+    """一座城市的预报。多城市行程里天气按城市分开呈现。"""
+
+    city_name: str
+    source: str
+    source_label: str
+    days: list[DayWeatherOut]
+    note: str | None = None
+
+
+class TripWeatherOut(BaseModel):
+    start_date: date
+    end_date: date
+    cities: list[CityWeatherOut]
+
+
 class TripDetailOut(BaseModel):
     id: str
     name: str
@@ -106,6 +179,8 @@ class TripDetailOut(BaseModel):
     created_at: str
     updated_at: str
     stays: list[StayOut]
+    transfers: list[TransferOut] = Field(default_factory=list)
+    budget: BudgetPanelOut
 
 
 class CityOut(BaseModel):
@@ -163,6 +238,66 @@ def _detail_out(stored: StoredTrip) -> TripDetailOut:
             )
             for stay in plan.stays
         ],
+        transfers=[
+            _transfer_out(transfer) for transfer in trip_service.load_transfers(stored.id)
+        ],
+        budget=_budget_panel(trip_service.load_budget(stored.id)),
+    )
+
+
+def _transfer_out(transfer) -> TransferOut:
+    return TransferOut(
+        id=transfer.id,
+        from_city_name=transfer.from_city_name,
+        to_city_name=transfer.to_city_name,
+        day_index=transfer.day_index,
+        day=transfer.day,
+        mode=transfer.mode,
+        service_no=transfer.service_no,
+        from_station=transfer.from_station,
+        to_station=transfer.to_station,
+        dep_time=transfer.dep_time,
+        arr_time=transfer.arr_time,
+        duration_min=transfer.duration_min,
+        price=transfer.price,
+        price_source=transfer.price_source,
+        is_reference_price=transfer.is_reference_price,
+        has_tickets=transfer.has_tickets,
+        advice_reason=transfer.advice_reason,
+        note=transfer.note,
+        alternatives=list(transfer.alternatives),
+    )
+
+
+def _budget_panel(items) -> BudgetPanelOut:
+    """把预算项拆成「城际交通」与「其余」两栏。
+
+    城际交通独立成栏是设计的明确要求：它是多城市行程独有的开销，
+    混在总账里看不出「这趟多花的钱其实都在路上」。
+    """
+    def to_out(item) -> BudgetItemOut:
+        return BudgetItemOut(
+            category=item.category,
+            label=item.label,
+            amount=item.amount,
+            currency=item.currency,
+            is_reference_price=item.is_reference_price,
+            source=item.source,
+            note=item.note,
+        )
+
+    intercity = [to_out(item) for item in items if item.category == "intercity"]
+    others = [to_out(item) for item in items if item.category != "intercity"]
+    intercity_total = sum(item.amount for item in intercity)
+    other_total = sum(item.amount for item in others)
+
+    return BudgetPanelOut(
+        intercity=intercity,
+        others=others,
+        intercity_total=round(intercity_total, 2),
+        other_total=round(other_total, 2),
+        total=round(intercity_total + other_total, 2),
+        has_reference_prices=any(item.is_reference_price for item in items),
     )
 
 
@@ -294,6 +429,72 @@ async def plan_trip(payload: PlanIn) -> TripDetailOut:
     if stored is None:  # pragma: no cover
         raise HTTPException(status_code=500, detail="行程写入后立即读取失败")
     return _detail_out(stored)
+
+
+@router.post(
+    "/trips/{trip_id}/transfers/refresh",
+    response_model=list[TransferOut],
+    summary="刷新城际转移",
+)
+async def refresh_transfers(trip_id: str) -> list[TransferOut]:
+    """重新查一遍两两城市之间的车次，并同步城际交通的预算栏。
+
+    会真的问 12306。超出 14 天预售期的行程查不到车次是**正常**的——那时按
+    距离给出建议并把原因写明，而不是当成没有铁路。
+    """
+    if trip_service.get_trip(trip_id) is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    transfers = await transfer_service.refresh_transfers(trip_id)
+    return [_transfer_out(transfer) for transfer in transfers]
+
+
+@router.get("/trips/{trip_id}/weather", response_model=TripWeatherOut, summary="多城市天气")
+async def trip_weather(trip_id: str) -> TripWeatherOut:
+    """按城市分别取预报。
+
+    多城市行程里天气必须按城市分开——「北京下雨」和「西安下雨」对行程安排的
+    含义完全不同。主力是 Open-Meteo（16 天），高德兜底（约 4 天）。
+    """
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    adcodes = [stay.city_adcode for stay in stored.plan.stays if stay.city_adcode]
+    cities = trip_service.load_cities(adcodes)
+
+    forecasts = await weather_service.forecast_for_cities(
+        [cities[code] for code in adcodes if code in cities],
+        stored.plan.start_date,
+        stored.plan.end_date,
+    )
+
+    return TripWeatherOut(
+        start_date=stored.plan.start_date,
+        end_date=stored.plan.end_date,
+        cities=[
+            CityWeatherOut(
+                city_name=forecast.city_name,
+                source=forecast.source.value,
+                source_label=forecast.source.label,
+                days=[
+                    DayWeatherOut(
+                        date=day.day,
+                        text=day.text,
+                        night_text=day.night_text,
+                        temp_min=day.temp_min,
+                        temp_max=day.temp_max,
+                        temperature_text=day.temperature_text,
+                        precipitation_probability=day.precipitation_probability,
+                        is_bad_outdoor=day.is_bad_outdoor,
+                    )
+                    for day in forecast.days
+                ],
+                note=forecast.note,
+            )
+            for forecast in forecasts
+        ],
+    )
 
 
 @router.get("/cities/resolve", response_model=list[CityOut], summary="解析城市")
