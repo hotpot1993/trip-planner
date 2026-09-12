@@ -409,34 +409,46 @@ def _load_day(conn: sqlite3.Connection, day_row: sqlite3.Row) -> PlannedDay:
         (day_row["id"],),
     ).fetchall()
 
-    items = tuple(
-        PlannedItem(
-            kind=ItemKind(row["kind"]),
-            title=row["title"] or "",
-            poi_id=row["poi_id"],
-            start_time=row["start_time"],
-            end_time=row["end_time"],
-            note=row["note"],
-            facts=PoiFacts(
-                lat_gcj02=row["lat_gcj02"],
-                lng_gcj02=row["lng_gcj02"],
-                address=row["address"],
-                tel=row["tel"],
-                rating=row["rating"],
-                open_time=row["open_time"],
-                photo=row["photo_url"],
-            )
-            if row["poi_id"]
-            else None,
-        )
-        for row in item_rows
-    )
-
     return PlannedDay(
         day=date.fromisoformat(day_row["date"]),
         seq_in_stay=int(day_row["seq_in_stay"]),
         theme=day_row["theme"],
-        items=items,
+        items=tuple(_item_from_row(row) for row in item_rows),
+    )
+
+
+def _item_from_row(row: sqlite3.Row) -> PlannedItem:
+    """把一行天项还原成领域对象。
+
+    一个景点如果没有实体主键，它就是「待对齐」的，而它的提及名就是它的标题——
+    待对齐队列（`alignment_task`）里存着正式的记录，这里只需要让状态可辨认。
+    不这样还原的话，未对齐的景点既没有主键也没有待对齐记录，会被
+    `PlannedItem` 自己的不变量拒掉，整份行程就读不回来了。
+    """
+    kind = ItemKind(row["kind"])
+    poi_id = row["poi_id"]
+    title = row["title"] or ""
+    awaiting_alignment = kind is ItemKind.POI and not poi_id
+
+    return PlannedItem(
+        kind=kind,
+        title=title,
+        poi_id=poi_id,
+        start_time=row["start_time"],
+        end_time=row["end_time"],
+        note=row["note"],
+        facts=PoiFacts(
+            lat_gcj02=row["lat_gcj02"],
+            lng_gcj02=row["lng_gcj02"],
+            address=row["address"],
+            tel=row["tel"],
+            rating=row["rating"],
+            open_time=row["open_time"],
+            photo=row["photo_url"],
+        )
+        if poi_id
+        else None,
+        unresolved_name=title if awaiting_alignment else None,
     )
 
 

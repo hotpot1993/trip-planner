@@ -300,6 +300,64 @@ def test_aligned_spots_are_not_queued(db: sqlite3.Connection) -> None:
     assert count == 0
 
 
+def test_unresolved_spot_round_trips_as_unresolved(db: sqlite3.Connection) -> None:
+    """未对齐的景点必须能读回来。
+
+    它没有实体主键，所以在表里就是 `poi_id IS NULL`；读回时若不把这个状态
+    还原成 `unresolved_name`，`PlannedItem` 的不变量会拒绝它，整份行程报错——
+    这个 bug 真的发生过，且只在含待对齐景点的行程上出现。
+    """
+    stay = PlannedStay(
+        city_name="南京", city_adcode=NANJING, seq=0,
+        days=(PlannedDay(
+            day=START, seq_in_stay=0,
+            items=(_item("网友推荐但搜不到的小院子", poi_id=None),),
+        ),),
+    )
+    trip_id = save_planned_trip(
+        PlannedTrip(name="含待对齐", start_date=START, stays=(stay,)), conn=db
+    )
+
+    loaded = load_trip(trip_id, conn=db)
+    assert loaded is not None
+
+    item = loaded.plan.stays[0].days[0].items[0]
+    assert item.kind is ItemKind.POI
+    assert item.poi_id is None
+    assert item.unresolved_name == "网友推荐但搜不到的小院子"
+    assert loaded.plan.unresolved_names == ("网友推荐但搜不到的小院子",)
+
+
+def test_mixed_aligned_and_unresolved_items_round_trip(db: sqlite3.Connection) -> None:
+    """同一份行程里既有对齐的景点、也有待对齐的景点与餐饮。"""
+    stay = PlannedStay(
+        city_name="南京", city_adcode=NANJING, seq=0,
+        days=(PlannedDay(
+            day=START, seq_in_stay=0,
+            items=(
+                _item("中山陵", "B000A8UIN0"),
+                PlannedItem(kind=ItemKind.MEAL, title="南京大牌档"),
+                _item("对不上的地方", poi_id=None),
+            ),
+        ),),
+    )
+    trip_id = save_planned_trip(
+        PlannedTrip(name="混合", start_date=START, stays=(stay,)), conn=db
+    )
+
+    loaded = load_trip(trip_id, conn=db)
+    assert loaded is not None
+
+    items = loaded.plan.stays[0].days[0].items
+    assert [i.title for i in items] == ["中山陵", "南京大牌档", "对不上的地方"]
+    assert items[0].poi_id == "B000A8UIN0"
+    assert items[0].unresolved_name is None
+    assert items[1].kind is ItemKind.MEAL
+    assert items[1].unresolved_name is None  # 餐饮没有主键，但它不是待对齐的
+    assert items[2].poi_id is None
+    assert items[2].unresolved_name == "对不上的地方"
+
+
 # ─── POI 是实体真源，被多次行程复用时刷新而不重复 ────────────────
 
 

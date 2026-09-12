@@ -101,6 +101,11 @@ export interface CreateTripIn {
   name?: string
 }
 
+export interface UpdateStaysIn {
+  cities: { name: string; days: number }[]
+  start_date?: string
+}
+
 /** 后端在错误响应里给的结构化信息。 */
 export interface ApiErrorBody {
   error?: string
@@ -190,6 +195,13 @@ export const deleteTrip = (tripId: string): Promise<void> =>
 
 export const confirmTrip = (tripId: string): Promise<TripDetailOut> =>
   request(`/api/trips/${encodeURIComponent(tripId)}/confirm`, { method: 'POST' })
+
+/** 改城市与天数。总天数与日期由服务端重算。 */
+export const updateStays = (tripId: string, payload: UpdateStaysIn): Promise<TripDetailOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/stays`, {
+    ...jsonInit(payload),
+    method: 'PUT',
+  })
 
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)

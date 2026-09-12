@@ -296,3 +296,186 @@ def test_amap_failure_is_reported_as_502(api_client, stub_cities, monkeypatch) -
     response = _create(api_client, cities=[{"name": "南京", "days": 1}])
     assert response.status_code == 502
     assert response.json()["error"] == "amap_unavailable"
+
+
+# ─── 生成路径的管道 ──────────────────────────────────────────
+#
+# 真实的规划要跑高德与 LLM，没有 Key 就动不了。这里用打桩的引擎产出驱动
+# 完整链路（接口 → 转换 → 落库 → 读回），验证的是管道本身接对了没有。
+
+
+ENGINE_PLAN = {
+    "query": "南京三日游",
+    "destination": "南京",
+    "start_date": "2026-10-01",
+    "days_count": 2,
+    "route_issues": ["Day2 行程较紧凑，建议提前预约餐厅"],
+    "weather_note": None,
+    "days": [
+        {
+            "day": 1,
+            "date": "2026-10-01",
+            "theme": "钟山风景区",
+            "timeline": [
+                {
+                    "type": "attraction",
+                    "name": "中山陵",
+                    "amap_poi_id": "B000A8UIN0",
+                    "location": {"lng": 118.853, "lat": 32.058},
+                    "address": "南京市玄武区石象路7号",
+                    "rating": 4.7,
+                    "open_time": "08:30-17:00",
+                    "start_time": "09:00",
+                    "end_time": "11:30",
+                    "tip": "台阶多，穿舒适的鞋。",
+                },
+                {"type": "lunch", "name": "南京大牌档", "reason": "本地口味"},
+                {
+                    "type": "attraction",
+                    "name": "对不上的小院子",
+                    "amap_poi_id": None,
+                    "location": None,
+                    "start_time": "14:00",
+                    "end_time": "15:30",
+                },
+                {"type": "dinner", "name": None, "no_restaurant": True},
+            ],
+        },
+        {
+            "day": 2,
+            "date": "2026-10-02",
+            "theme": None,
+            "timeline": [
+                {
+                    "type": "attraction",
+                    "name": "南京博物院",
+                    "amap_poi_id": "B000A8V003",
+                    "location": {"lng": 118.828, "lat": 32.043},
+                    "address": "南京市玄武区中山东路321号",
+                    "rating": 4.8,
+                    "start_time": "09:00",
+                    "end_time": "12:00",
+                }
+            ],
+        },
+    ],
+}
+
+
+def _stub_engine(monkeypatch, plan: dict | None = None, *, missing: list[str] | None = None):
+    """替换 trip_service 里的引擎调用。"""
+    from lushu.engine import PlanOutcome, PlanStage
+    from lushu.services import trip_service
+
+    async def fake_run_plan(query, *, on_stage=None, **overrides):
+        if missing:
+            return PlanOutcome(success=False, missing_fields=missing)
+        outcome = PlanOutcome(
+            success=True,
+            plan=plan or ENGINE_PLAN,
+            stages=[PlanStage(node="intent", label="理解需求")],
+        )
+        if on_stage:
+            for stage in outcome.stages:
+                on_stage(stage)
+        return outcome
+
+    monkeypatch.setattr(trip_service, "run_plan", fake_run_plan)
+
+
+def test_plan_creates_a_trip_from_the_engine_output(api_client, stub_cities, monkeypatch) -> None:
+    _stub_engine(monkeypatch)
+
+    response = api_client.post("/api/trips/plan", json={"query": "南京三日游"})
+    assert response.status_code == 201
+
+    body = response.json()
+    assert body["name"] == "南京 2 天"
+    assert body["total_days"] == 2
+    assert body["city_names"] == ["南京"]
+    assert body["query"] == "南京三日游"
+
+
+def test_planned_trip_carries_days_and_items(api_client, stub_cities, monkeypatch) -> None:
+    _stub_engine(monkeypatch)
+    body = api_client.post("/api/trips/plan", json={"query": "南京三日游"}).json()
+
+    days = body["stays"][0]["days"]
+    assert [d["date"] for d in days] == ["2026-10-01", "2026-10-02"]
+    assert days[0]["theme"] == "钟山风景区"
+
+    titles = [i["title"] for i in days[0]["items"]]
+    assert titles == ["中山陵", "南京大牌档", "对不上的小院子", "晚餐（未找到合适餐厅）"]
+
+
+def test_planned_items_carry_hard_facts(api_client, stub_cities, monkeypatch) -> None:
+    _stub_engine(monkeypatch)
+    body = api_client.post("/api/trips/plan", json={"query": "南京三日游"}).json()
+
+    attraction = body["stays"][0]["days"][0]["items"][0]
+    assert attraction["poi_id"] == "B000A8UIN0"
+    assert attraction["lat_gcj02"] == 32.058
+    assert attraction["lng_gcj02"] == 118.853
+    assert attraction["rating"] == 4.7
+    assert attraction["open_time"] == "08:30-17:00"
+
+
+def test_unresolved_spot_in_a_planned_trip_shows_as_unaligned(
+    api_client, stub_cities, monkeypatch
+) -> None:
+    """引擎给的景点没有实体主键时，界面上要能看出它待对齐。"""
+    _stub_engine(monkeypatch)
+    body = api_client.post("/api/trips/plan", json={"query": "南京三日游"}).json()
+
+    items = body["stays"][0]["days"][0]["items"]
+    unaligned = [i for i in items if i["kind"] == "poi" and i["poi_id"] is None]
+    assert len(unaligned) == 1
+    assert unaligned[0]["title"] == "对不上的小院子"
+
+
+def test_planned_trip_queues_the_alignment_task(api_client, stub_cities, monkeypatch) -> None:
+    from lushu.store import connect
+
+    _stub_engine(monkeypatch)
+    api_client.post("/api/trips/plan", json={"query": "南京三日游"})
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT mention_name, city_adcode FROM alignment_task"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["mention_name"] == "对不上的小院子"
+    assert row["city_adcode"] == "320100"
+
+
+def test_planned_trip_survives_a_read_back(api_client, stub_cities, monkeypatch) -> None:
+    """含待对齐景点的行程必须能读回来——这个 bug 真的发生过。"""
+    _stub_engine(monkeypatch)
+    trip_id = api_client.post("/api/trips/plan", json={"query": "南京三日游"}).json()["id"]
+
+    response = api_client.get(f"/api/trips/{trip_id}")
+    assert response.status_code == 200
+    assert response.json()["total_days"] == 2
+
+
+def test_engine_issues_reach_the_client(api_client, stub_cities, monkeypatch) -> None:
+    """引擎给的出行提醒目前留在 plan_json 里，不出现在行程接口上。
+
+    这一条是**有意为之的记录**：M1 不做提醒展示，M4 会连同预约提醒一起做。
+    """
+    _stub_engine(monkeypatch)
+    body = api_client.post("/api/trips/plan", json={"query": "南京三日游"}).json()
+
+    assert "warnings" not in body
+
+
+def test_plan_missing_input_returns_422(api_client, stub_cities, monkeypatch) -> None:
+    _stub_engine(monkeypatch, missing=["出发日期"])
+    response = api_client.post("/api/trips/plan", json={"query": "出去玩"})
+
+    assert response.status_code == 422
+    assert response.json()["missing_fields"] == ["出发日期"]
