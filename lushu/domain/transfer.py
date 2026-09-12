@@ -19,6 +19,8 @@ RAIL_PREFERRED_MAX_MINUTES = 240
 AIR_PREFERRED_MIN_MINUTES = 360
 # 这个距离以内不必坐飞机
 SHORT_HAUL_KM = 60.0
+# 高铁在四小时左右大约能跑这么远。只在拿不到车次数据时用来估判。
+RAIL_COMFORTABLE_KM = 1200.0
 
 
 class TransferMode(StrEnum):
@@ -136,10 +138,19 @@ def advise_mode(
     best_rail_minutes: int | None,
     rail_available: bool,
     distance_km: float | None = None,
+    rail_unknown: bool = False,
 ) -> TransferAdvice:
     """按距离与耗时给出交通方式建议。
 
-    规则依据都是客观的：高铁耗时来自 12306 的实际车次，距离来自两座城市的坐标。
+    三种情形分得很清楚：
+
+    - **rail_unknown=True**：铁路存在，但当下查不到车次数据（例如超出 12306 的
+      14 天预售期）。这时按距离估判，并把「依据是距离而不是实际车次」说出来。
+      若把它当成「没有铁路」，就会因为一个与铁路无关的原因建议用户去坐飞机。
+    - **rail_available=False**：确实没有查到这条线路的铁路。
+    - 其余：按实际最快车次判断。
+
+    规则依据都是客观的：耗时来自 12306 的实际车次，距离来自两座城市的坐标。
     LLM 在旅游交通上的判断往往过时且不可追溯，而这里每一条结论都能指出依据。
     """
     if distance_km is not None and distance_km <= SHORT_HAUL_KM:
@@ -147,6 +158,25 @@ def advise_mode(
             mode=TransferMode.COACH,
             reason=f"两地相距约 {distance_km:.0f} 公里，汽车比铁路与航空都省事",
             alternatives=(TransferMode.DRIVE, TransferMode.RAIL),
+        )
+
+    if rail_unknown:
+        if distance_km is not None and distance_km <= RAIL_COMFORTABLE_KM:
+            return TransferAdvice(
+                mode=TransferMode.RAIL,
+                reason=(
+                    f"两地相距约 {distance_km:.0f} 公里，按距离判断高铁在四小时上下；"
+                    "还没到 12306 的放票期，具体车次要等临近出发才能查到"
+                ),
+                alternatives=(TransferMode.AIR,),
+            )
+        return TransferAdvice(
+            mode=TransferMode.AIR,
+            reason=(
+                f"两地相距约 {distance_km:.0f} 公里" if distance_km else "两地相距较远"
+            )
+            + "，航空更可能省时；还没到 12306 的放票期，铁路方案要等临近出发再确认",
+            alternatives=(TransferMode.RAIL,),
         )
 
     if not rail_available or best_rail_minutes is None:
@@ -177,6 +207,37 @@ def advise_mode(
         reason=f"最快高铁也要 {duration}，航空更划算",
         alternatives=(TransferMode.RAIL,),
     )
+
+
+@dataclass(frozen=True)
+class TransferPlacementPlan:
+    """待落库的一次城际转移。
+
+    用**城市停留的序号**与**全行程天序号**定位，而不是数据库 id——读模型
+    （`PlannedTrip`）因此不必背上 id，落库时由存储层自己换算。
+    """
+
+    from_stay_seq: int
+    to_stay_seq: int
+    day_index: int
+    mode: TransferMode
+    advice_reason: str
+    chosen: TransferOption | None = None
+    alternatives: tuple[TransferOption, ...] = ()
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.to_stay_seq <= self.from_stay_seq:
+            raise ValueError("转移的目的城市必须排在出发城市之后")
+        if self.day_index < 0:
+            raise ValueError("天序号不能为负")
+        if self.chosen is not None and self.chosen.mode is not self.mode:
+            raise ValueError("选中的方案与建议的交通方式不一致")
+
+    @property
+    def intercity_fare(self) -> float | None:
+        """记进城际交通栏的金额。没有方案就没有金额。"""
+        return self.chosen.price if self.chosen else None
 
 
 # 各等级列车的每公里估价。用于 12306 拿不到票价时的降级。

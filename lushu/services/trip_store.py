@@ -25,8 +25,18 @@ from lushu.domain.planned import (
     PlannedTrip,
     PoiFacts,
 )
+from lushu.domain.transfer import TransferPlacementPlan
 from lushu.store.connection import connect
-from lushu.store.ids import CITY_STAY, DAY, DAY_ITEM, TRIP, WORKBENCH, new_id
+from lushu.store.ids import (
+    BUDGET,
+    CITY_STAY,
+    DAY,
+    DAY_ITEM,
+    TRANSFER,
+    TRIP,
+    WORKBENCH,
+    new_id,
+)
 
 
 class UnresolvedCityError(RuntimeError):
@@ -63,6 +73,31 @@ class TripSummary:
     status: str
     city_names: tuple[str, ...]
     updated_at: str
+
+
+@dataclass(frozen=True)
+class StoredTransfer:
+    """从表里读回的一次城际转移。"""
+
+    id: str
+    from_city_name: str
+    to_city_name: str
+    day: date
+    day_index: int
+    mode: str
+    service_no: str | None = None
+    from_station: str | None = None
+    to_station: str | None = None
+    dep_time: str | None = None
+    arr_time: str | None = None
+    duration_min: int | None = None
+    price: float | None = None
+    price_source: str = "estimate"
+    is_reference_price: bool = True
+    has_tickets: bool | None = None
+    advice_reason: str | None = None
+    note: str | None = None
+    alternatives: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -136,6 +171,204 @@ def delete_trip(trip_id: str, *, conn: sqlite3.Connection | None = None) -> bool
     finally:
         if owned:
             active.close()
+
+
+# ─── 城际转移 ────────────────────────────────────────────────
+
+
+def save_transfers(
+    trip_id: str,
+    transfers: Sequence[TransferPlacementPlan],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """替换一份行程的城际转移，并同步城际交通的预算项。
+
+    替换语义：重新查一次车次会覆盖旧的。城际交通的预算项是从转移派生的，
+    所以一并重建——两处各存一份必然会对不上。
+
+    入参用序号定位（城市停留序号 + 全行程天序号），数据库 id 在这里换算。
+    """
+    owned = conn is None
+    active = conn or connect()
+    try:
+        with active:
+            stay_ids = _stay_ids_by_seq(active, trip_id)
+            day_ids = _day_ids_by_index(active, trip_id)
+            if not stay_ids:
+                raise LookupError(f"行程不存在或没有城市停留：{trip_id}")
+
+            active.execute("DELETE FROM intercity_transfer WHERE trip_id = ?", (trip_id,))
+            active.execute(
+                "DELETE FROM budget_item WHERE trip_id = ? AND category = 'intercity'",
+                (trip_id,),
+            )
+
+            written = 0
+            for transfer in transfers:
+                from_stay_id = stay_ids.get(transfer.from_stay_seq)
+                to_stay_id = stay_ids.get(transfer.to_stay_seq)
+                day_id = day_ids.get(transfer.day_index)
+                if from_stay_id is None or to_stay_id is None or day_id is None:
+                    raise LookupError(
+                        f"转移落点不存在：城市 {transfer.from_stay_seq}→{transfer.to_stay_seq}，"
+                        f"天序号 {transfer.day_index}"
+                    )
+
+                chosen = transfer.chosen
+                active.execute(
+                    "INSERT INTO intercity_transfer "
+                    "(id, trip_id, from_city_stay_id, to_city_stay_id, day_id, mode, service_no, "
+                    " from_station, to_station, dep_time, arr_time, duration_min, price, "
+                    " price_source, is_reference_price, has_tickets, advice_reason, note, "
+                    " alternatives_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_id(TRANSFER),
+                        trip_id,
+                        from_stay_id,
+                        to_stay_id,
+                        day_id,
+                        transfer.mode.value,
+                        chosen.service_no if chosen else None,
+                        chosen.from_station if chosen else None,
+                        chosen.to_station if chosen else None,
+                        chosen.dep_time if chosen else None,
+                        chosen.arr_time if chosen else None,
+                        chosen.duration_min if chosen else None,
+                        transfer.intercity_fare,
+                        chosen.price_source.value if chosen else "estimate",
+                        1 if (chosen is None or chosen.is_reference_price) else 0,
+                        None if chosen is None else (1 if chosen.has_tickets else 0),
+                        transfer.advice_reason,
+                        transfer.note,
+                        json.dumps(
+                            [_option_payload(option) for option in transfer.alternatives],
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+                written += 1
+
+                fare = transfer.intercity_fare
+                if fare is not None:
+                    active.execute(
+                        "INSERT INTO budget_item "
+                        "(id, trip_id, category, label, amount, currency, is_reference_price, source, note) "
+                        "VALUES (?, ?, 'intercity', ?, ?, 'CNY', ?, ?, ?)",
+                        (
+                            new_id(BUDGET),
+                            trip_id,
+                            _transfer_label(transfer),
+                            fare,
+                            1 if (chosen is None or chosen.is_reference_price) else 0,
+                            chosen.price_source.value if chosen else "estimate",
+                            chosen.note if chosen else None,
+                        ),
+                    )
+
+            return written
+    finally:
+        if owned:
+            active.close()
+
+
+def load_transfers(
+    trip_id: str, *, conn: sqlite3.Connection | None = None
+) -> list[StoredTransfer]:
+    """读回一份行程的城际转移，按日期排序。"""
+    owned = conn is None
+    active = conn or connect()
+    try:
+        rows = active.execute(
+            "SELECT t.id, t.mode, t.service_no, t.from_station, t.to_station, "
+            "       t.dep_time, t.arr_time, t.duration_min, t.price, t.price_source, "
+            "       t.is_reference_price, t.has_tickets, t.advice_reason, t.note, "
+            "       t.alternatives_json, "
+            "       d.date, d.id AS day_id, fs.city_name AS from_city, ts.city_name AS to_city, "
+            "       fs.seq AS from_seq "
+            "FROM intercity_transfer t "
+            "JOIN day d ON d.id = t.day_id "
+            "JOIN city_stay fs ON fs.id = t.from_city_stay_id "
+            "JOIN city_stay ts ON ts.id = t.to_city_stay_id "
+            "WHERE t.trip_id = ? ORDER BY d.date",
+            (trip_id,),
+        ).fetchall()
+
+        # 全行程的天序号用于把转移挂回它所在的那一天
+        order = [
+            row["id"]
+            for row in active.execute(
+                "SELECT id FROM day WHERE trip_id = ? ORDER BY date", (trip_id,)
+            ).fetchall()
+        ]
+    finally:
+        if owned:
+            active.close()
+
+    index_of = {day_id: index for index, day_id in enumerate(order)}
+
+    return [
+        StoredTransfer(
+            id=row["id"],
+            from_city_name=row["from_city"],
+            to_city_name=row["to_city"],
+            day=date.fromisoformat(row["date"]),
+            day_index=index_of.get(row["day_id"], 0),
+            mode=row["mode"],
+            service_no=row["service_no"],
+            from_station=row["from_station"],
+            to_station=row["to_station"],
+            dep_time=row["dep_time"],
+            arr_time=row["arr_time"],
+            duration_min=row["duration_min"],
+            price=row["price"],
+            price_source=row["price_source"],
+            is_reference_price=bool(row["is_reference_price"]),
+            has_tickets=None if row["has_tickets"] is None else bool(row["has_tickets"]),
+            advice_reason=row["advice_reason"],
+            note=row["note"],
+            alternatives=tuple(json.loads(row["alternatives_json"] or "[]")),
+        )
+        for row in rows
+    ]
+
+
+def _stay_ids_by_seq(conn: sqlite3.Connection, trip_id: str) -> dict[int, str]:
+    rows = conn.execute(
+        "SELECT id, seq FROM city_stay WHERE trip_id = ?", (trip_id,)
+    ).fetchall()
+    return {int(row["seq"]): row["id"] for row in rows}
+
+
+def _day_ids_by_index(conn: sqlite3.Connection, trip_id: str) -> dict[int, str]:
+    """全行程的天序号 → 天 id。序号按日期排，与读模型一致。"""
+    rows = conn.execute(
+        "SELECT id FROM day WHERE trip_id = ? ORDER BY date", (trip_id,)
+    ).fetchall()
+    return {index: row["id"] for index, row in enumerate(rows)}
+
+
+def _option_payload(option) -> dict:
+    """备选方案存成 JSON。只留展示要用的字段。"""
+    return {
+        "service_no": option.service_no,
+        "from_station": option.from_station,
+        "to_station": option.to_station,
+        "dep_time": option.dep_time,
+        "arr_time": option.arr_time,
+        "duration_min": option.duration_min,
+        "price": option.price,
+        "is_reference_price": option.is_reference_price,
+        "has_tickets": option.has_tickets,
+    }
+
+
+def _transfer_label(transfer: TransferPlacementPlan) -> str:
+    chosen = transfer.chosen
+    if chosen is None:
+        return f"城际交通（{transfer.from_stay_seq}→{transfer.to_stay_seq}，暂无方案）"
+    return f"{chosen.from_station} → {chosen.to_station} {chosen.service_no}"
 
 
 def set_status(trip_id: str, status: str, *, conn: sqlite3.Connection | None = None) -> None:

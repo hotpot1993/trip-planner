@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -325,9 +325,33 @@ ALTER TABLE day ADD COLUMN theme TEXT;
 ALTER TABLE trip ADD COLUMN query TEXT;
 """
 
+# ─── 迁移 3：城际转移补上站名与余票快照 ──────────────────────────
+#
+# 转移卡片要显示「南京南 → 西安北」。12306 的余票查询返回的是电报码，
+# 站名是查出来之后才知道的，所以得存下来——否则每次展示都要重查一次。
+# 余票状态是个快照，会变；存它并在界面上标注抓取时间，比不存更诚实。
+#
+_MIGRATION_3 = """
+ALTER TABLE intercity_transfer ADD COLUMN from_station TEXT;
+ALTER TABLE intercity_transfer ADD COLUMN to_station TEXT;
+ALTER TABLE intercity_transfer ADD COLUMN has_tickets INTEGER;
+"""
+
+# ─── 迁移 4：城际转移补上说明 ────────────────────────────────────
+#
+# advice_reason 说的是「为什么推荐这种方式」，note 说的是「这份数据的可信度」——
+# 票价是参考价、还没到放票期、车次没查到。两者读者不同，都必须在界面上看得见，
+# 否则用户会把估价当成实价，或者以为这条线路没有铁路。
+#
+_MIGRATION_4 = """
+ALTER TABLE intercity_transfer ADD COLUMN note TEXT;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
+    3: _MIGRATION_3,
+    4: _MIGRATION_4,
 }
 
 
