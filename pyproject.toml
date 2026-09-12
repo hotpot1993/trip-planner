@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-asyncio",
     "ruff",
 ]
 
@@ -35,6 +36,8 @@ include = ["lushu*", "third_party*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# 规划流水线是异步的，测试里不必逐个标 @pytest.mark.asyncio
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 120

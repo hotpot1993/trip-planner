@@ -9,14 +9,17 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lushu import __version__, config
-from lushu.api import config_router, health_router
-from lushu.engine import prepare_engine
+from lushu.api import config_router, health_router, trip_router
+from lushu.engine import AmapError, prepare_engine
+from lushu.services.plan_converter import PlanConversionError
+from lushu.services.trip_service import CityNotFoundError, MissingInputError
+from lushu.services.trip_store import UnresolvedCityError
 from lushu.store import initialize
 
 logger = logging.getLogger(__name__)
@@ -62,9 +65,56 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(config_router)
+    app.include_router(trip_router)
 
+    _register_error_handlers(app)
     _mount_frontend(app)
     return app
+
+
+def _register_error_handlers(app: FastAPI) -> None:
+    """把领域与服务的异常翻译成可读的中文 HTTP 响应。
+
+    这些错误都是用户能据以行动的（「这个城市查不到」「还需要告诉我日期」），
+    所以必须带着结构化信息返回，而不是一个 500 加一段堆栈。
+    """
+
+    @app.exception_handler(MissingInputError)
+    def _missing_input(_request: Request, exc: MissingInputError) -> JSONResponse:
+        # 对话式流程的正常分支：把该问的问题交回前端
+        return JSONResponse(
+            status_code=422,
+            content={"error": "missing_input", "message": str(exc), "missing_fields": list(exc.missing_fields)},
+        )
+
+    @app.exception_handler(CityNotFoundError)
+    def _city_not_found(_request: Request, exc: CityNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "city_not_found", "message": str(exc), "city_names": list(exc.city_names)},
+        )
+
+    @app.exception_handler(UnresolvedCityError)
+    def _unresolved_city(_request: Request, exc: UnresolvedCityError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "city_not_found", "message": str(exc), "city_names": list(exc.city_names)},
+        )
+
+    @app.exception_handler(AmapError)
+    def _amap_error(_request: Request, exc: AmapError) -> JSONResponse:
+        # 上游服务的问题不是用户的错，用 502 明确区分
+        return JSONResponse(
+            status_code=502,
+            content={"error": "amap_unavailable", "message": str(exc)},
+        )
+
+    @app.exception_handler(PlanConversionError)
+    def _plan_conversion(_request: Request, exc: PlanConversionError) -> JSONResponse:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "plan_conversion_failed", "message": str(exc)},
+        )
 
 
 def _mount_frontend(app: FastAPI) -> None:

@@ -6,5 +6,6 @@
 
 from .config_routes import router as config_router
 from .health import router as health_router
+from .trip_routes import router as trip_router
 
-__all__ = ["config_router", "health_router"]
+__all__ = ["config_router", "health_router", "trip_router"]

@@ -45,7 +45,9 @@
 
 ## 对源码做的改动
 
-**只有一处，且是机械改写：把 import 语句中的 `app.` 前缀改为 `third_party.floattrip.`**，共 107 行。
+### 改动一：import 前缀改写（107 行，纯机械）
+
+把 import 语句中的 `app.` 前缀改为 `third_party.floattrip.`。
 
 改写**严格限定在 import 语句行**（`^\s*from\s+app\.` 与 `^\s*import\s+app\.`），因为上游存在 3 处非 import 的 `app.` 会被误伤：
 
@@ -53,7 +55,25 @@
 - `core/database.py` 的 `"data" / "app.db"`——字符串里的库文件名
 - `runtime/observability.py` 的 `logging.getLogger("app.runtime")`——日志器名称
 
-**除此之外没有改动任何逻辑、任何一行代码。**
+### 改动二：让高德 POI id 流到最终计划（3 处，纯增量）
+
+**动机**：ADR-0002 规定高德 POI id 是全系统的实体主键，攻略知识库以它为挂载点。但上游在 `poi_to_spot()` 里把这个字段丢掉了——它返回的字典有 name、rating、location、address，唯独没有 `id`；`_finalize_impl()` 又只按白名单复制字段，于是 id 在整条流水线上彻底消失。
+
+后果是：行程里的景点只能靠**名字**与知识库关联。而名字是会被改写的（「故宫」与「故宫博物院」），用它做关联等于放弃了实体对齐，还要在每次规划后拿名字去反查高德。用一个字段的损失换一次反查，不划算。
+
+改动内容：
+
+| 文件 | 改动 |
+|---|---|
+| `providers/amap/poi.py` | `poi_to_spot()` 的返回字典增加 `amap_poi_id` |
+| `planning/nodes.py` | `_finalize_impl()` 的 timeline 项增加 `amap_poi_id` |
+| `planning/nodes.py` | `_finalize_impl()` 的 `candidate_spots` 白名单增加 `amap_poi_id` |
+
+三处都是**新增字段**，不改变任何既有字段、不改变任何控制流。上游代码即使不认识这个字段也不受影响。
+
+### 除此之外没有改动任何逻辑
+
+以上两处之外，本目录与上游逐字一致（哈希见 `MANIFEST.txt`，记录的是上游原始文件，便于核对）。
 
 ## 已知适配项（M1 必须处理）
 

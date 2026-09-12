@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -310,8 +310,24 @@ CREATE INDEX idx_gl_doc ON gold_label(source_document_id);
 -- 查不到两字词的索引（Q43）。
 """
 
+# ─── 迁移 2：补齐引擎产出里那些行程页要显示的字段 ────────────────
+#
+# 迁移 1 漏掉了几样东西：poi 表只有坐标与地址，但评分、开放时间、图片
+# 同样是硬事实（只能来自官方接口，见 ADR-0001），而开放时间还要参与
+# 时间可行性判断；day 表没有主题，trip 表没有用户原话。
+# 加列在 SQLite 里不需要重建表，代价很低。
+#
+_MIGRATION_2 = """
+ALTER TABLE poi ADD COLUMN rating REAL;
+ALTER TABLE poi ADD COLUMN open_time TEXT;
+ALTER TABLE poi ADD COLUMN photo_url TEXT;
+ALTER TABLE day ADD COLUMN theme TEXT;
+ALTER TABLE trip ADD COLUMN query TEXT;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
+    2: _MIGRATION_2,
 }
 
 

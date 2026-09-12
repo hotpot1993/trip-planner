@@ -69,6 +69,16 @@ def _layer_of(path: Path) -> str:
     return "composition"
 
 
+def _own_package(layer: str) -> set[str]:
+    """本层自己的包名。
+
+    分层约束管的是**层与层之间的依赖方向**，不是层内引用：
+    `services/trip_service` 引用 `services/trip_store` 完全正常。
+    少了这一条，规则就会把合法的层内引用误判为违规。
+    """
+    return {f"lushu.{layer}"} if layer != "pure" else set()
+
+
 def _module_label(path: Path) -> str:
     return str(path.relative_to(ROOT)).replace("\\", "/")
 
@@ -141,7 +151,7 @@ def test_dependency_direction(path: Path) -> None:
     if layer == "composition":
         return
 
-    allowed_prefixes = LAYER_ALLOWS[layer]
+    allowed_prefixes = LAYER_ALLOWS[layer] | _own_package(layer)
     offenders: list[str] = []
 
     for name in _imported_roots(path):

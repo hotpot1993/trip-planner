@@ -49,8 +49,13 @@ class CityStay:
 
 
 @dataclass(frozen=True)
-class PlannedDay:
-    """排期之后的一天。每一天都确定地归属某一个城市停留。"""
+class CalendarDay:
+    """排期骨架上的一天：只有日期与归属，没有内容。
+
+    与 `planned.PlannedDay` 的区别是阶段不同：本类型在**规划之前**由
+    `plan_days()` 从城市停留序列铺出来，回答「哪一天属于哪座城市」；
+    `PlannedDay` 在**规划之后**，带着主题与具体事项。
+    """
 
     index: int  # 全行程内从 0 开始的序号
     day_date: date
@@ -76,7 +81,7 @@ def total_days(stays: Sequence[CityStay]) -> int:
     return sum(stay.stay_days for stay in stays)
 
 
-def plan_days(stays: Sequence[CityStay], start_date: date) -> list[PlannedDay]:
+def plan_days(stays: Sequence[CityStay], start_date: date) -> list[CalendarDay]:
     """把城市停留序列铺成连续的日历天。
 
     天从 start_date 起连续排列，中途不插入额外的转移天——转移是
@@ -86,12 +91,12 @@ def plan_days(stays: Sequence[CityStay], start_date: date) -> list[PlannedDay]:
     if not ordered:
         return []
 
-    planned: list[PlannedDay] = []
+    planned: list[CalendarDay] = []
     cursor = start_date
     for stay in ordered:
         for offset in range(stay.stay_days):
             planned.append(
-                PlannedDay(
+                CalendarDay(
                     index=len(planned),
                     day_date=cursor,
                     city_stay_id=stay.id,
@@ -103,7 +108,7 @@ def plan_days(stays: Sequence[CityStay], start_date: date) -> list[PlannedDay]:
 
 
 def default_transfer_day(
-    days: Sequence[PlannedDay],
+    days: Sequence[CalendarDay],
     from_stay: CityStay,
     to_stay: CityStay,
     *,

@@ -8,6 +8,20 @@
 改动范围就是这个目录，而不是散落全项目的引用点。
 """
 
+from .amap import AmapError, CityMatch, lookup_city, resolve_city
 from .bootstrap import engine_info, prepare_engine, reset_engine
+from .planning import PlanOutcome, PlanStage, run_plan, stream_plan
 
-__all__ = ["engine_info", "prepare_engine", "reset_engine"]
+__all__ = [
+    "AmapError",
+    "CityMatch",
+    "PlanOutcome",
+    "PlanStage",
+    "engine_info",
+    "lookup_city",
+    "prepare_engine",
+    "reset_engine",
+    "resolve_city",
+    "run_plan",
+    "stream_plan",
+]

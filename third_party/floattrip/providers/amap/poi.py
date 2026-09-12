@@ -269,6 +269,9 @@ def poi_to_spot(poi: dict[str, Any]) -> dict[str, Any] | None:
     cost_raw = str(biz_ext.get("cost", "")).strip() if isinstance(biz_ext, dict) else ""
 
     return {
+        # 路书追加：保留高德 POI id。它是本项目的实体主键（ADR-0002），
+        # 上游在此处丢弃了它，会导致行程里的景点无法与攻略知识库关联。
+        "amap_poi_id": str(poi.get("id") or "").strip() or None,
         "name": poi.get("name", ""),
         "rating": rating,
         "open_time": open_time,

@@ -814,6 +814,8 @@ def _finalize_impl(state: TravelPlanState) -> dict[str, Any]:
             timeline.append({
                 "type": "attraction",
                 "name": spot["name"],
+                # 路书追加：把实体主键带到最终计划里，否则行程景点无法挂攻略知识（ADR-0002）
+                "amap_poi_id": info.get("amap_poi_id"),
                 "start_time": spot.get("start_time"),
                 "end_time": spot.get("end_time"),
                 "period": spot.get("period"),
@@ -881,7 +883,7 @@ def _finalize_impl(state: TravelPlanState) -> dict[str, Any]:
     placed_names = {s["name"] for day_r in state.route for s in day_r.get("spots", [])}
     candidate_spots = [
         {k: v for k, v in s.items()
-         if k in ("name", "rating", "photo", "location", "open_time", "address")}
+         if k in ("amap_poi_id", "name", "rating", "photo", "location", "open_time", "address")}
         for s in state.pois
         if s.get("name") and s["name"] not in placed_names
     ][:20]
