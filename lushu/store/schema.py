@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -412,12 +412,75 @@ CREATE TABLE llm_cache (
 );
 """
 
+# ─── 迁移 6：claim 记住原文里的叫法 ───────────────────────────────
+#
+# ADR-0009 要求对齐结果显式记录「提及名」与「归并到的本体」两个字段。
+# `poi_id` 是本体（结论挂在它上面），`subject_name` 是原文里的叫法——
+# 可能是「陕历博」「午门」这类简称或子点。两者都留着，人工复核时才看得懂
+# 「这条结论当时是从哪句话里来的、为什么挂到这个景点上」。
+#
+# 顺带加 claim_evidence 的 (source_group_id) 索引：置信度按独立来源组计数，
+# 每次重算都要按组去重，是热路径。
+#
+_MIGRATION_6 = """
+ALTER TABLE claim ADD COLUMN subject_name TEXT;
+CREATE INDEX idx_ce_group ON claim_evidence(source_group_id);
+"""
+
+# ─── 迁移 7：把候选的原始载荷留在待办上 ───────────────────────────
+#
+# 提纯与对齐分两步跑，中间会有「提纯出了结论但还没对齐」的状态。
+# 那个状态下结论全文只存在于内存里——脚本一结束就没了，
+# 人工去处置待对齐时看不到「这条结论说的是什么」。
+#
+# 所以待办要带上完整的候选载荷，而不是只存一个提及名。
+# 顺带把 `alignment_task` 的候选数上限固定为 10（记录时截断），
+# 免得一条噪声查询把几万个候选塞进一行的 JSON 里。
+#
+_MIGRATION_7 = """
+ALTER TABLE alignment_task ADD COLUMN extracted_claims_json TEXT;
+"""
+
+# ─── 迁移 8：来源组的归组依据多一个取值 ───────────────────────────
+#
+# 迁移 1 给 `basis` 定的取值只有 domain_author / similarity / single，
+# 那是「文字复制」这一层的判据（照搬、节选）。M3 落地时补上了第二层——
+# 按提纯结果的结论重合度判同源（ADR-0008）——它需要自己的取值，
+# 否则写不进去（实测撞了 CHECK 约束）。
+#
+# `domain_author` 这个取值在实现里没被用到：第一层的实际判据是 LCS 覆盖，
+# 也就是 similarity；域名与作者留着做人工复核的参考。保留它不动，
+# 理由与所有已发布的迁移一样：不改写历史。
+#
+# SQLite 不能直接改 CHECK 约束，只能重建表。这张表极小（一个来源组一行），
+# 重建的代价可以接受。
+#
+_MIGRATION_8 = """
+CREATE TABLE source_group_new (
+    id           TEXT PRIMARY KEY,
+    site         TEXT,
+    author       TEXT,
+    -- domain_author 与 similarity 是「文字复制」层（照搬、节选）的判据；
+    -- conclusion_overlap 是「结论同源」层（逐句改写）的判据（ADR-0008）
+    basis        TEXT NOT NULL
+                 CHECK(basis IN ('domain_author', 'similarity', 'conclusion_overlap', 'single')),
+    created_at   TEXT NOT NULL
+);
+INSERT INTO source_group_new (id, site, author, basis, created_at)
+    SELECT id, site, author, basis, created_at FROM source_group;
+DROP TABLE source_group;
+ALTER TABLE source_group_new RENAME TO source_group;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
     3: _MIGRATION_3,
     4: _MIGRATION_4,
     5: _MIGRATION_5,
+    6: _MIGRATION_6,
+    7: _MIGRATION_7,
+    8: _MIGRATION_8,
 }
 
 
