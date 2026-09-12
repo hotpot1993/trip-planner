@@ -15,7 +15,13 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lushu import __version__, config
-from lushu.api import config_router, health_router, plan_router, trip_router
+from lushu.api import (
+    config_router,
+    health_router,
+    plan_router,
+    trip_router,
+    workbench_router,
+)
 from lushu.api.errors import describe_error
 from lushu.engine import AmapError, prepare_engine
 from lushu.services.plan_converter import PlanConversionError
@@ -68,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(trip_router)
     app.include_router(plan_router)
+    app.include_router(workbench_router)
 
     _register_error_handlers(app)
     _mount_frontend(app)

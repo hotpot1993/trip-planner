@@ -201,6 +201,33 @@ def extraction_stats(*, conn: sqlite3.Connection | None = None) -> dict[str, int
 # ─── 实体落库 ────────────────────────────────────────────────────
 
 
+def resolve_city_adcode(
+    adcode: str | None, *, conn: sqlite3.Connection
+) -> str | None:
+    """把任意层级的行政区划代码归到库里已有的那座城市。
+
+    高德给 POI 的是**区县**级 adcode（故宫博物院是 `110101` 东城区），
+    而 `city` 表存的是**市**一级（北京是 `110100`）。直接拿 POI 的 adcode
+    去写 `poi.city_adcode` 会撞外键——实测踩过。
+
+    先精确匹配，再按前四位匹配市一级。都找不到就返回 None，
+    让调用方去处理（宁可不写，也不要编一个不存在的城市）。
+    """
+    code = (adcode or "").strip()
+    if not code:
+        return None
+
+    row = conn.execute("SELECT adcode FROM city WHERE adcode = ?", (code,)).fetchone()
+    if row is not None:
+        return row["adcode"]
+
+    row = conn.execute(
+        "SELECT adcode FROM city WHERE substr(adcode, 1, 4) = ? ORDER BY adcode LIMIT 1",
+        (code[:4],),
+    ).fetchone()
+    return row["adcode"] if row else None
+
+
 def save_candidate_poi(
     *,
     conn: sqlite3.Connection,
@@ -637,13 +664,33 @@ def pending_alignments(
             city_adcode=row["city_adcode"],
             context_snippet=row["context_snippet"],
             source_document_id=row["source_document_id"],
-            candidates=tuple(json.loads(row["candidate_pois_json"] or "[]")),
-            claims=tuple(json.loads(row["extracted_claims_json"] or "[]")),
+            candidates=dict_items(row["candidate_pois_json"]),
+            claims=dict_items(row["extracted_claims_json"]),
             status=row["status"],
             created_at=row["created_at"],
         )
         for row in rows
     ]
+
+
+def dict_items(raw: str | None) -> tuple[dict, ...]:
+    """把一列存着 JSON 数组的文本读成字典元组。
+
+    对库里的 JSON **不能盲信**：早先版本的载荷形状与现在不同
+    （候选曾是字符串列表），坏数据不该让整个工作台页面打不开。
+    读不出来或形状不对的条目直接跳过，页面继续能显示其余内容。
+
+    公开（不带下划线）是因为接口层与管线都要读这两列。
+    """
+    if not raw:
+        return ()
+    try:
+        loaded = json.loads(raw)
+    except ValueError:
+        return ()
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(item for item in loaded if isinstance(item, dict))
 
 
 def resolve_alignment(

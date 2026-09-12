@@ -31,6 +31,7 @@ from lushu.domain.knowledge import (
     refresh_days_for,
 )
 from lushu.domain.lineage import CandidateSet
+from lushu.domain.poi import CandidatePoi
 from lushu.store.connection import connect
 from lushu.store.ids import SOURCE_GROUP, new_id
 from lushu.store.search import document_contains
@@ -759,6 +760,129 @@ def _move_evidence(conn: sqlite3.Connection, *, from_claim: str, to_claim: str) 
         )
         moved = True
     return moved
+
+
+def resolve_alignment_task(
+    *,
+    conn: sqlite3.Connection,
+    task_id: str,
+    poi_id: str | None,
+    discard: bool,
+    fetch=None,
+    now: str | None = None,
+) -> list[str]:
+    """人工处置一条待对齐：挂到指定 POI，或判定「这不是一个地点」。
+
+    人工确认与自动对齐走的是同一段落库代码（`_materialize_claims`），
+    差别只在主体从哪来：自动那一步来自高德搜索，这一步来自人。
+
+    `fetch` 可注入，便于离线测试。返回新建的结论 id（可能为空——
+    候选的引文若已回不到原文，会被如实丢掉而不是谎报成功）。
+    """
+
+    timestamp = now or _now()
+    row = conn.execute("SELECT * FROM alignment_task WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise PipelineError(f"没有这条待办：{task_id}")
+
+    if discard:
+        ks.resolve_alignment(
+            conn=conn,
+            task_id=task_id,
+            resolved_poi_id=None,
+            status=ks.ALIGN_STATUS_DISCARDED,
+            resolved_at=timestamp,
+        )
+        return []
+
+    if not poi_id:
+        raise PipelineError("必须给出 poi_id，或显式 discard 表示这不是一个地点")
+
+    poi = _poi_for(conn, poi_id, fetch=fetch)
+    if poi is None:
+        raise PipelineError(f"这个 POI 取不到：{poi_id}")
+
+    city_adcode = ks.resolve_city_adcode(row["city_adcode"], conn=conn) or ks.resolve_city_adcode(
+        poi.adcode, conn=conn
+    )
+    if not city_adcode:
+        raise PipelineError(
+            f"「{poi.name}」所在的城市（adcode {poi.adcode or '未知'}）还没入库，"
+            "无法确定该挂到哪座城市"
+        )
+
+    task = ks.PendingAlignment(
+        task_id=task_id,
+        mention_name=row["mention_name"],
+        city_adcode=city_adcode,
+        context_snippet=row["context_snippet"],
+        source_document_id=row["source_document_id"],
+        candidates=(),
+        claims=ks.dict_items(row["extracted_claims_json"]),
+        status=row["status"],
+        created_at=row["created_at"],
+    )
+
+    created = _materialize_claims(
+        conn,
+        task=task,
+        poi=poi,
+        city_adcode=city_adcode,
+        roots=_lineage_from_db(conn, poi),
+        now=timestamp,
+    )
+    ks.resolve_alignment(
+        conn=conn,
+        task_id=task_id,
+        resolved_poi_id=poi.poi_id,
+        resolved_at=timestamp,
+    )
+    return created
+
+
+def _poi_for(conn: sqlite3.Connection, poi_id: str, *, fetch=None):
+    """先看库里有没有，没有就去高德取一次。
+
+    人对齐时指名的那个 POI 可能还没落过库——它在候选列表里展示过，
+    但只有被选中才会写进来。
+    """
+    row = conn.execute(
+        "SELECT amap_poi_id, name, typecode, type, adcode, address, tel, "
+        "       parent_poi_id, lat_gcj02, lng_gcj02, rating, open_time, photo_url, raw_json "
+        "FROM poi WHERE amap_poi_id = ?",
+        (poi_id,),
+    ).fetchone()
+    if row is not None:
+        return CandidatePoi(
+            poi_id=row["amap_poi_id"],
+            name=row["name"],
+            typecode=row["typecode"],
+            type_name=row["type"],
+            adcode=row["adcode"],
+            address=row["address"],
+            tel=row["tel"],
+            parent_id=row["parent_poi_id"],
+            lng_gcj02=row["lng_gcj02"],
+            lat_gcj02=row["lat_gcj02"],
+            rating=row["rating"],
+            open_time=row["open_time"],
+            photo_url=row["photo_url"],
+            raw_json=row["raw_json"],
+        )
+
+    fetcher = fetch or (lambda target: fetch_poi(target))
+    try:
+        return fetcher(poi_id)
+    except PoiSearchError:
+        return None
+
+
+def _lineage_from_db(conn: sqlite3.Connection, poi) -> CandidateSet:
+    """从库里把本体关系拼出来，供 `_materialize_claims` 记住子点。"""
+    lineage: dict[str, str | None] = {poi.poi_id: (poi.parent_id or "").strip() or None}
+    for row in conn.execute("SELECT amap_poi_id, parent_poi_id FROM poi").fetchall():
+        lineage.setdefault(row["amap_poi_id"], (row["parent_poi_id"] or "").strip() or None)
+    return CandidateSet(candidates=(poi,), lineage=lineage)
 
 
 def pipeline_stats(*, conn: sqlite3.Connection | None = None) -> dict[str, object]:
