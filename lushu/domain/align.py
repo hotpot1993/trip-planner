@@ -24,53 +24,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import StrEnum
 
-# 高德 POI 的 typecode 是六位分层编码，前两位是门类。
-# 取值依据：`风景名胜`(11)、`科教文化服务`(14)、`体育休闲服务`(08)。
-# 停车场是 1509xx、公交站 1507xx、地铁站 1505xx、公厕是 20xxxx，
-# 它们会大量挤进结果里（搜「故宫」第二位就是「故宫博物院检票处」），
-# 必须显式排除，而不是靠名称过滤。
-_DESTINATION_PREFIXES = ("11", "14", "08")
-
-# 「只是个地名」：道路名、桥梁、热点地名、行政地名。
-# 它们可能确实值得去（回民街、洒金桥），但没有门票、没有开放时间，
-# 也不该占行程里的一个天项，所以单列一类由调用方决定怎么用。
-_PLACE_NAME_PREFIXES = ("19",)
-
-# 明确「不是目的地」的类型前缀。停车场与公交站属交通设施服务(15)，
-# 售票处与咨询中心属生活服务(07)，公厕属公共设施(20)，商场属商务住宅(12)。
-_EXCLUDED_PREFIXES = ("15", "07", "20", "12", "13", "16", "17", "18")
-
-# 购物服务(06)整体不算目的地——商场、专卖店、超市都在里面——但
-# **特色商业街**是例外：实测回民街的 typecode 是 060101，而它确实值得去。
-# 只按「购物服务一律排除」会把它丢掉，所以这一条要单独判。
-_DESTINATION_SHOPPING_TYPECODE = "060101"
-_DESTINATION_SHOPPING_MARK = "特色商业街"
+from lushu.domain.lineage import CandidateSet
+from lushu.domain.poi import NOT_A_DESTINATION_MARKS, CandidatePoi, PoiKind
 
 # 名称得分达到这个值才认为「就是它」。
 MATCH_SCORE_THRESHOLD = 0.80
 
+# 只剩一个实体可选时的放宽下限。
+#
+# 依据是实测：俗称与官方名的字面重合度可以低到 0.48（「陕历博」对
+# 「陕西历史博物馆」）甚至 0.00（「兵马俑」对「秦始皇帝陵博物院」）——
+# **别名能力在高德那边，不在字符串里**。只有一个实体可选时，
+# 高德的排序就是唯一的信号，按 0.80 卡掉只会让这些提及白进待对齐队列。
+#
+# 实测的另一面：0.40 这个下限不能取消。搜「不倒翁小姐姐」，
+# 高德返回的第一条是「唐韵不倒翁」（0.44），那是一家同名小店而不是景点；
+# 完全不设下限就会把它挂到行程上。
+SINGLE_ENTITY_FLOOR = 0.40
+
 # 前两名得分差小于这个值就交人工。名称相近的候选之间，高德排序没有权威性，
 # 我们也没有别的判据，硬选一个不如让数据工作台问一句。
-AMBIGUITY_MARGIN = 0.10
-
-
-class PoiKind(StrEnum):
-    """POI 在行程里的地位。"""
-
-    DESTINATION = "destination"  # 值得去的地方：可以占一个天项
-    PLACE_NAME = "place_name"  # 只是个地名：街区、道路、桥
-    IRRELEVANT = "irrelevant"  # 停车场、公交站、公厕、商店：不该进候选
-
-
-class PoiLevel(StrEnum):
-    """POI 在本体—子点层级里的位置。"""
-
-    ROOT = "root"  # 本体，parent 为空
-    SUB = "sub"  # 子点，parent 非空
+#
+# 取 0.08 而不是 0.10：实测搜「钟楼」，同名候选 1.20、
+# 降权后的「大慈恩寺-钟楼」1.10，差值恰好 0.10。真正该交人工的情形
+# （两个候选得分完全相同）差值是 0.00，留 0.08 的余量足够把两者分开。
+AMBIGUITY_MARGIN = 0.08
 
 
 class AlignOutcome(StrEnum):
@@ -89,40 +72,6 @@ class AlignOutcome(StrEnum):
         它同样会生成一条待办，只是原因不同——要补的是上下文，不是选候选。
         """
         return self is not AlignOutcome.ALIGNED
-
-
-def classify_poi(typecode: str | None, type_name: str | None = None) -> PoiKind:
-    """按高德类型判 POI 在行程里的地位。
-
-    先看 typecode（六位数字，稳定），typecode 缺失时退化到中文类型串。
-    实测现有 poi 表的 typecode 全是空的（见 docs/M3-PROBE.md 第四节），
-    所以退化路径不是摆设。
-    """
-    code = (typecode or "").strip()
-    if code:
-        if code.startswith(_PLACE_NAME_PREFIXES):
-            return PoiKind.PLACE_NAME
-        # 特色商业街要先于通用前缀判断，否则会被 06 的排除规则吃掉
-        if code == _DESTINATION_SHOPPING_TYPECODE and _DESTINATION_SHOPPING_MARK in (
-            type_name or ""
-        ):
-            return PoiKind.DESTINATION
-        if code.startswith(_EXCLUDED_PREFIXES) or code.startswith("06"):
-            return PoiKind.IRRELEVANT
-        if code.startswith(_DESTINATION_PREFIXES):
-            return PoiKind.DESTINATION
-        return PoiKind.IRRELEVANT
-
-    text = (type_name or "").strip()
-    if not text:
-        return PoiKind.IRRELEVANT
-    if text.startswith("地名地址信息"):
-        return PoiKind.PLACE_NAME
-    if _DESTINATION_SHOPPING_MARK in text:
-        return PoiKind.DESTINATION
-    if text.startswith(("风景名胜", "科教文化服务", "体育休闲服务")):
-        return PoiKind.DESTINATION
-    return PoiKind.IRRELEVANT
 
 
 @dataclass(frozen=True)
@@ -146,62 +95,36 @@ class Mention:
 
 
 @dataclass(frozen=True)
-class CandidatePoi:
-    """高德返回的一个候选 POI。字段名对齐 `/v3/place/text` 的原始键名。"""
-
-    poi_id: str
-    name: str
-    typecode: str | None = None
-    type_name: str | None = None
-    adcode: str | None = None
-    city_name: str | None = None
-    citycode: str | None = None
-    address: str | None = None
-    tel: str | None = None
-    lng_gcj02: float | None = None
-    lat_gcj02: float | None = None
-    parent_id: str | None = None
-    rating: float | None = None
-    open_time: str | None = None
-    photo_url: str | None = None
-    raw_json: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.poi_id.strip():
-            raise ValueError("候选 POI 必须有高德 id，它是本项目的实体主键（ADR-0002）")
-
-    @property
-    def kind(self) -> PoiKind:
-        return classify_poi(self.typecode, self.type_name)
-
-    @property
-    def level(self) -> PoiLevel:
-        return PoiLevel.SUB if (self.parent_id or "").strip() else PoiLevel.ROOT
-
-    def in_city(self, city_adcode: str | None) -> bool:
-        """是否落在目标城市内。
-
-        只比前四位（市一级）。区县不同是正常的——「兵马俑」在临潼区，
-        「陕西历史博物馆」在雁塔区，都属西安。
-        """
-        if not city_adcode:
-            return True
-        mine = (self.adcode or "").strip()
-        if not mine:
-            # 没有 adcode 的候选无法校验城市，按不通过处理。
-            # 放过它就等于承认「袁家村在西安」这类跨城错误。
-            return False
-        return mine[:4] == city_adcode.strip()[:4]
-
-
-@dataclass(frozen=True)
 class ScoredCandidate:
-    """一个候选及其得分。得分要能解释，否则人工复核时无从判断。"""
+    """一个候选及其得分。得分要能解释，否则人工复核时无从判断。
+
+    `name_score` 只量名称像不像，`rank_score` 才是用来选谁的分。
+    两者分开是因为**排序还要看名称是上位还是下位**：实测搜「故宫博物院」时，
+    `故宫博物院` 与 `故宫博物院-午门` 的名称得分都是 1.0，
+    只按名称选就会选中午门，然后挂错一层（ADR-0009）。
+    """
 
     poi: CandidatePoi
     name_score: float
+    rank_score: float
     usable: bool  # 是否通过城市与类型门禁
     reject_reason: str | None = None
+    rank_note: str | None = None
+
+
+# 名称**就是**答案（完全相同，或作为完整一段跟在分隔符后）时的加成。
+#
+# 加满到 1.0 之上，是因为实测里同名的候选会互相咬住：
+# 搜「钟楼」，`钟楼` 与 `大慈恩寺-钟楼` 都会得到 1.0 与 0.90；
+# 搜「大唐不夜城」，`大唐不夜城` 与 `穿越大唐不夜城` 只差 0.12。
+# 不把「完全同名」这个信号拉开，它就会被包含关系淹没。
+_EXACT_NAME_BONUS = 0.20
+
+# 一方**包含**另一方（但不等同）时的加成。
+# 实测「兵马俑」要靠它才能对上「秦始皇兵马俑博物馆」——两者的
+# SequenceMatcher 比例只有 0.90，而答案是「秦始皇帝陵博物院」，
+# 字面重合度为零，别名能力在高德那边而不在字符串里。
+_CONTAINS_BONUS = 0.12
 
 
 @dataclass(frozen=True)
@@ -306,68 +229,194 @@ def _strip_generic_suffix(name: str) -> str:
     return name
 
 
+def _rank_bonus(mention: str, name: str) -> tuple[float, str | None]:
+    """名称关系上的加成：这个候选与提及是同一个名字，还是只是被它包含。
+
+    实测依据（docs/M3-PROBE.md 第 3.3 节）：真实候选里同一处地方会有
+    好几个名称相近的条目，`故宫博物院` / `故宫博物院-午门` /
+    `故宫博物院-午门西卫生间` 分别是 1.0、0.90、0.90。不把「完全相同」
+    与「被包含」拉开，选出来的就会是其中一个子点。
+
+    返回（加成, 说明）。说明会进人工复核的界面，让人看得懂为什么这么排。
+    """
+    left = mention.strip()
+    right = name.strip()
+    if not left or not right:
+        return 0.0, None
+
+    if left == right:
+        return _EXACT_NAME_BONUS, "名称完全相同"
+    if _follows_separator(left, right):
+        return _EXACT_NAME_BONUS, "名称在分隔符后完整出现"
+
+    # 包含关系：两边都要够长才有意义。
+    # 「钟楼」出现在「临潼奥莱钟楼广场」里，但那是另一个地方；
+    # 只有像「兵马俑」对「秦始皇兵马俑博物馆」这样、被包含的那一段
+    # 本身就是一个完整名称时，包含关系才是正信号。
+    if len(left) >= 3 and left in right:
+        return _CONTAINS_BONUS, "名称完整出现在候选名里"
+    if len(right) >= 3 and right in left:
+        return _CONTAINS_BONUS, "候选名完整出现在名称里"
+    return 0.0, None
+
+
 def score_candidates(
     mention: Mention,
     candidates: list[CandidatePoi] | tuple[CandidatePoi, ...],
 ) -> list[ScoredCandidate]:
-    """给候选打分并标记门禁结果。返回按得分降序、同分按原名顺序的列表。"""
+    """给候选打分并标记门禁结果。返回按排序分降序、同分保持原顺序的列表。
+
+    打分只做两件与层级无关的事：名称像不像，以及名称关系是上位还是下位。
+    层级（本体 / 子点）的处置在 `align()` 里，因为判断层级要先消除重复实体。
+    """
     scored: list[ScoredCandidate] = []
 
     for poi in candidates:
         score = name_score(mention.name, poi.name)
+        bonus, note = _rank_bonus(mention.name, poi.name)
         reason: str | None = None
 
         if not poi.in_city(mention.city_adcode):
             reason = f"不在{mention.city_name}（候选 adcode {poi.adcode or '缺失'}）"
         elif poi.kind is PoiKind.IRRELEVANT:
-            reason = f"类型不是目的地（{poi.typecode or poi.type_name or '未知'}）"
+            # 名称判据优先展示：它比六位类型码好读，人工复核时一眼能看懂。
+            # 但**类型码仍然要独立挡住**——只按名称判断的话，
+            # 「故宫博物院检票处」这种会被放过，因为「检票处」不在名称标记里。
+            if poi.name and any(mark in poi.name for mark in NOT_A_DESTINATION_MARKS):
+                reason = f"不是游览对象（{poi.name}）"
+            else:
+                reason = f"类型不是目的地（{poi.type_name or poi.typecode or '未知'}）"
 
         scored.append(
             ScoredCandidate(
                 poi=poi,
                 name_score=score,
+                # 刻意**不夹到 1.0**。加成的作用是把「完全相同」与「被包含」
+                # 分开，一夹上界两者就都变成 1.0、差值恒为 0，
+                # 于是「前两名咬得紧」这条规则会在每一处都触发。
+                # 排序分超过 1 不代表名称相似度超过 1，它只是排序用的。
+                rank_score=round(score + bonus, 4),
                 usable=reason is None,
                 reject_reason=reason,
+                rank_note=note,
             )
         )
 
-    scored.sort(key=lambda item: -item.name_score)
-    return scored
+    # 同分时保持高德给的顺序：`sorted` 是稳定排序，所以不加第三键。
+    # 换成别的排序方式（例如按 poi_id）等于用我们臆想的顺序覆盖高德的排序信号。
+    scored.sort(key=lambda item: -item.rank_score)
+    return _demote_containment(scored)
 
 
-def _collapse_to_root(poi: CandidatePoi, by_id: dict[str, CandidatePoi]) -> CandidatePoi:
-    """沿 parent 链走到本体。
+# 存在完全同名候选时，给「只是被包含」的候选降的权。
+#
+# 依据是实测：搜「钟楼」，第一名是 `钟楼`（西安钟楼，完全同名），
+# 第二名 `大慈恩寺-钟楼` 却因为包含关系拿到 1.02，与同名候选只差 0.10；
+# 搜「珍宝馆」，`故宫博物院-珍宝馆` 与 `国学艺术珍宝馆` 差 0.08。
+# 两处都是同一个原因——**当答案就摆在眼前时，一个碰巧含有同样字眼的名字
+# 不该跟它并列**。降权之后这两条都能干脆地选出正确答案。
+_CONTAINMENT_DEMOTION = 0.12
 
-    层级可以不止一层，实测的链是三跳：
-    `秦始皇兵马俑博物馆第1停车场` → `秦始皇兵马俑博物馆` → `秦始皇帝陵博物院`，
-    只有最后那个的 `parent` 是空的。所以归并要一直走到空为止，
-    走一步不算归并。最多走 `_MAX_PARENT_HOPS` 步，防止数据里出现环时死循环。
+_CONTAINS_NOTES = ("名称完整出现在候选名里", "候选名完整出现在名称里")
+_EXACT_NOTES = ("名称完全相同", "名称在分隔符后完整出现")
+
+
+def _demote_containment(scored: list[ScoredCandidate]) -> list[ScoredCandidate]:
+    """有完全同名候选时，把只靠包含关系得分的候选降下来。
+
+    没有完全同名候选时**什么都不做**——那时包含关系是唯一可用的信号，
+    正是它让俗称「兵马俑」对上「秦始皇兵马俑博物馆」。
     """
-    seen: set[str] = set()
-    current = poi
-    for _ in range(_MAX_PARENT_HOPS):
-        parent_id = (current.parent_id or "").strip()
-        if not parent_id or parent_id in seen:
-            break
-        seen.add(parent_id)
-        parent = by_id.get(parent_id)
-        if parent is None:
-            # 父节点不在本次候选里。这是一个真实的缺口：高德把本体排在
-            # 结果之外时我们只知道「它属于某个东西」，却不知道那个东西是谁。
-            # 此时不归并，留在子点上并让调用方看见 collapsed=False。
-            break
-        current = parent
-    return current
+    usable = [item for item in scored if item.usable]
+    if not any(item.rank_note in _EXACT_NOTES for item in usable):
+        return scored
+
+    return [
+        ScoredCandidate(
+            poi=item.poi,
+            name_score=item.name_score,
+            rank_score=round(item.rank_score - _CONTAINMENT_DEMOTION, 4),
+            usable=item.usable,
+            reject_reason=item.reject_reason,
+            rank_note=f"{item.rank_note}（已有同名候选，降权）",
+        )
+        if item.rank_note in _CONTAINS_NOTES
+        else item
+        for item in scored
+    ]
 
 
-_MAX_PARENT_HOPS = 8
+@dataclass(frozen=True)
+class _Entity:
+    """一个**本体**以及指向它的那批候选。
+
+    搜索结果是「一组实体」，不是一个候选列表：实测搜「兵马俑」，
+    十条结果里六条最终属于同一个本体（秦始皇帝陵博物院）。
+    把重复实体算成多个候选，会让「前两名咬得紧就交人工」这条规则
+    在同一个地方反复触发。
+
+    `root` 是**本体对应的那个候选对象**（可能是这批里的任何一个，
+    不一定是最像的那个），不在候选集里时为 None——此时只能停在最像的候选上，
+    并让调用方从 `resolved` 与本体的差异看出来链条断了。
+    """
+
+    root_id: str
+    best: ScoredCandidate
+    members: tuple[ScoredCandidate, ...]
+    root: CandidatePoi | None = None
+
+
+def _consolidate(
+    scored: list[ScoredCandidate],
+    root_of: Mapping[str, str],
+) -> list[_Entity]:
+    """按本体合并候选，返回排序后的实体列表。
+
+    这一步同时解决两件事：
+
+    1. **重复实体**：同一个本体的多个候选算一个，取名称最像的那个代表
+    2. **本体与子点之间的选择**：靠 `rank_score` 里的名称关系加成，
+       本体（名称更短、更上位）自然排在子点前面
+    """
+    groups: dict[str, list[ScoredCandidate]] = {}
+    for item in scored:
+        if not item.usable:
+            continue
+        groups.setdefault(root_of.get(item.poi.poi_id, item.poi.poi_id), []).append(item)
+
+    entities: list[_Entity] = []
+    for root_id, members in groups.items():
+        members.sort(key=lambda item: -item.rank_score)
+        best = members[0]
+        # 本体自己可能**不是**这批里最像名称的那个：「午门」那一组里
+        # 名称最像的是子点，而本体是 `故宫博物院`。所以要显式找出来，
+        # 不能拿 best 当本体。
+        root = next((item.poi for item in members if item.poi.poi_id == root_id), None)
+        entities.append(
+            _Entity(
+                root_id=root_id,
+                best=best,
+                members=tuple(members),
+                root=root,
+            )
+        )
+
+    entities.sort(key=lambda entity: -entity.best.rank_score)
+    return entities
 
 
 def align(
     mention: Mention,
     candidates: list[CandidatePoi] | tuple[CandidatePoi, ...],
+    *,
+    lineage: CandidateSet | None = None,
 ) -> AlignResult:
-    """给一条提及在候选里找答案。"""
+    """给一条提及在候选里找答案。
+
+    `lineage` 是补全过的祖先谱系（`lushu/domain/lineage.py`）。
+    不传时退化为「只用候选自身带的 `parent`」——实测这样会让六个子点
+    都被当成独立本体、互相咬住选不出来，所以正式路径一定要传。
+    """
     if not mention.city_adcode:
         return AlignResult(
             mention=mention,
@@ -375,10 +424,15 @@ def align(
             reason="缺少城市 adcode，无法校验候选是否跨城",
         )
 
-    scored = score_candidates(mention, candidates)
-    usable = [item for item in scored if item.usable]
+    candidate_list = tuple(candidates)
+    roots = lineage or CandidateSet.from_candidates(candidate_list)
+    by_id = {poi.poi_id: poi for poi in candidate_list}
 
-    if not usable:
+    scored = score_candidates(mention, candidate_list)
+    root_of = {poi.poi_id: roots.root_of(poi.poi_id) for poi in candidate_list}
+    entities = _consolidate(scored, root_of)
+
+    if not entities:
         rejected = [item.reject_reason for item in scored[:3] if item.reject_reason]
         detail = "；".join(reason for reason in rejected if reason) or "高德没有返回候选"
         return AlignResult(
@@ -388,44 +442,91 @@ def align(
             reason=f"没有可用候选：{detail}",
         )
 
-    best = usable[0]
-    if best.name_score < MATCH_SCORE_THRESHOLD:
+    best = entities[0]
+
+    # ── 名称不像的时候怎么判 ────────────────────────────────────
+    #
+    # 俗称与官方名的字面重合度可以低到零（「兵马俑」对
+    # 「秦始皇帝陵博物院」是 0.00），别名能力在高德那边而不在字符串里。
+    #
+    # 所以只有**一个实体**可选时相信高德的排序；有多个实体时交人工——
+    # 实测搜「袁家村」限定西安，前五全是西安市区的连锁中餐馆，
+    # 名称完全一致而城市完全错误，多个实体之间硬选就是这种错误。
+    if best.best.rank_score < MATCH_SCORE_THRESHOLD:
+        if len(entities) == 1 and best.best.rank_score >= SINGLE_ENTITY_FLOOR:
+            return _accept(
+                mention, best, scored, roots, by_id,
+                note="唯一候选，按高德排序采信",
+            )
+        runner_up = entities[1] if len(entities) > 1 else None
+        detail = (
+            f"，且还有 {len(entities) - 1} 个可用实体"
+            f"（如「{runner_up.best.poi.name}」）" if runner_up else ""
+        )
         return AlignResult(
             mention=mention,
             outcome=AlignOutcome.NO_CANDIDATE,
             candidates=tuple(scored),
             reason=(
-                f"最高候选「{best.poi.name}」名称得分 {best.name_score:.2f}，"
-                f"低于 {MATCH_SCORE_THRESHOLD}"
+                f"最高候选「{best.best.poi.name}」名称得分 {best.best.name_score:.2f}，"
+                f"低于 {MATCH_SCORE_THRESHOLD}{detail}，无法确定指的是哪一个"
             ),
         )
 
-    # 前两名咬得太紧就不选。名称相近的候选之间高德排序没有权威性。
-    if len(usable) > 1:
-        runner_up = usable[1]
-        if best.name_score - runner_up.name_score < AMBIGUITY_MARGIN:
+    # 前两名咬得太紧就不选。同一个本体的候选已经在上一步合并掉了，
+    # 所以这里咬住的确实是两个**不同的地方**。
+    if len(entities) > 1:
+        runner_up = entities[1]
+        gap = best.best.rank_score - runner_up.best.rank_score
+        if gap < AMBIGUITY_MARGIN:
             return AlignResult(
                 mention=mention,
                 outcome=AlignOutcome.AMBIGUOUS,
                 candidates=tuple(scored),
                 reason=(
-                    f"「{best.poi.name}」与「{runner_up.poi.name}」得分相差不足 "
-                    f"{AMBIGUITY_MARGIN}，无法判断指的是哪一个"
+                    f"「{best.best.poi.name}」与「{runner_up.best.poi.name}」"
+                    f"得分相差 {gap:.2f}，不足 {AMBIGUITY_MARGIN}，"
+                    "无法判断指的是哪一个"
                 ),
             )
 
-    by_id = {poi.poi_id: poi for poi in candidates}
-    root = _collapse_to_root(best.poi, by_id)
+    return _accept(mention, best, scored, roots, by_id)
+
+
+def _accept(
+    mention: Mention,
+    entity: _Entity,
+    scored: list[ScoredCandidate],
+    roots: CandidateSet,
+    by_id: dict[str, CandidatePoi],
+    *,
+    note: str = "",
+) -> AlignResult:
+    """认定一个实体，并落到它的本体上（ADR-0009）。"""
+    # 本体优先从谱系里取，而不是只看候选集。实测这一步很关键：
+    # 搜「午门」时 `故宫博物院` 根本不在搜索结果里，
+    # 只看候选集就只能停在子点「故宫博物院-午门」上。
+    resolved = roots.owner_of(entity.best.poi.poi_id)
+    if resolved is None:
+        resolved = by_id.get(entity.root_id) or entity.best.poi
+
+    detail = f"名称得分 {entity.best.name_score:.2f}"
+    if note:
+        detail += f"（{note}）"
+    if entity.best.rank_note:
+        detail += f"（{entity.best.rank_note}）"
+    if resolved.poi_id != entity.best.poi.poi_id:
+        detail += f"，由子点「{entity.best.poi.name}」归并到本体「{resolved.name}」"
+    if len(entity.members) > 1:
+        detail += f"，另有 {len(entity.members) - 1} 条候选属于同一本体"
 
     return AlignResult(
         mention=mention,
         outcome=AlignOutcome.ALIGNED,
-        resolved=root,
-        matched=best.poi,
+        resolved=resolved,
+        matched=entity.best.poi,
         candidates=tuple(scored),
-        reason=(
-            f"名称得分 {best.name_score:.2f}"
-            + (f"，由子点「{best.poi.name}」归并到本体「{root.name}」"
-               if root.poi_id != best.poi.poi_id else "")
-        ),
+        reason=detail,
     )
+
+

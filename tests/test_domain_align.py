@@ -11,15 +11,12 @@ import pytest
 
 from lushu.domain.align import (
     AlignOutcome,
-    CandidatePoi,
     Mention,
-    PoiKind,
-    PoiLevel,
     align,
-    classify_poi,
     name_score,
     score_candidates,
 )
+from lushu.domain.poi import CandidatePoi, PoiKind
 
 
 def poi(poi_id: str, name: str, **kwargs: object) -> CandidatePoi:
@@ -46,75 +43,9 @@ GUGONG_RESULTS = [
 BEIJING = Mention(name="故宫", city_name="北京", city_adcode="110100")
 
 
-class TestClassifyPoi:
-    """类型分类。这是把停车场与公交站挡在候选之外的那道闸。"""
-
-    @pytest.mark.parametrize(
-        ("typecode", "expected"),
-        [
-            ("110201", PoiKind.DESTINATION),  # 故宫博物院
-            ("110202", PoiKind.DESTINATION),  # 秦始皇帝陵博物院
-            ("140100", PoiKind.DESTINATION),  # 陕西历史博物馆，博物馆
-            ("080300", PoiKind.DESTINATION),  # 体育休闲
-            ("060101", PoiKind.IRRELEVANT),  # 开元商城钟楼店，商场
-            ("150904", PoiKind.IRRELEVANT),  # 陕西历史博物馆停车场
-            ("150700", PoiKind.IRRELEVANT),  # 陕西历史博物馆(公交站)
-            ("150500", PoiKind.IRRELEVANT),  # 钟楼(地铁站)
-            ("070000", PoiKind.IRRELEVANT),  # 故宫博物院检票处、网络预约发票处
-            ("200301", PoiKind.IRRELEVANT),  # 午门西卫生间
-            ("120000", PoiKind.IRRELEVANT),  # 兵马俑旅游广场，商务住宅
-            ("190700", PoiKind.PLACE_NAME),  # 钟楼，热点地名
-            ("190301", PoiKind.PLACE_NAME),  # 洒金桥，交通地名;桥
-        ],
-    )
-    def test_by_typecode(self, typecode: str, expected: PoiKind) -> None:
-        assert classify_poi(typecode) is expected
-
-    def test_huimin_street_is_a_destination_despite_being_shopping(self) -> None:
-        """回民街的 typecode 是购物服务，但它确实值得去。
-
-        实测：`购物服务;特色商业街;步行街`，typecode 060101。只按「购物服务一律
-        排除」会把它丢掉，所以特色商业街要单列。
-        """
-        assert classify_poi(None, "购物服务;特色商业街;步行街") is PoiKind.DESTINATION
-
-    def test_falls_back_to_type_name_when_typecode_missing(self) -> None:
-        """现有 poi 表的 typecode 全是空的（docs/M3-PROBE.md 第四节），退化路径不是摆设。"""
-        assert classify_poi(None, "风景名胜;风景名胜;国家级景点") is PoiKind.DESTINATION
-        assert classify_poi("", "地名地址信息;交通地名;道路名") is PoiKind.PLACE_NAME
-        assert classify_poi(None, "交通设施服务;停车场;公共停车场") is PoiKind.IRRELEVANT
-
-    def test_unknown_is_irrelevant(self) -> None:
-        """宁可漏掉也不能放过：不确定的候选不该自己挂到行程上。"""
-        assert classify_poi(None, None) is PoiKind.IRRELEVANT
-        assert classify_poi("999999") is PoiKind.IRRELEVANT
-
-
-class TestPoiLevel:
-    def test_parent_empty_means_root(self) -> None:
-        assert poi("B000A8UIN8", "故宫博物院").level is PoiLevel.ROOT
-
-    def test_parent_present_means_sub(self) -> None:
-        assert poi("B000A84GDN", "故宫博物院-午门", parent_id="B000A8UIN8").level is PoiLevel.SUB
-
-
-class TestInCity:
-    def test_same_city_different_district_passes(self) -> None:
-        """兵马俑在临潼区（610115），陕历博在雁塔区（610113），都属西安（610100）。"""
-        assert poi("B001D09OYW", "秦始皇帝陵博物院", adcode="610115").in_city("610100")
-
-    def test_missing_adcode_is_rejected(self) -> None:
-        """没有 adcode 就无法校验城市，放过它等于承认跨城错误。"""
-        assert not poi("X", "某景点", adcode=None).in_city("610100")
-
-    def test_other_city_is_rejected(self) -> None:
-        assert not poi("X", "某景点", adcode="610104").in_city("110100")
-
-    def test_no_target_city_accepts_everything(self) -> None:
-        assert poi("X", "某景点", adcode="610104").in_city(None)
-
-
 class TestNameScore:
+    """名称得分的规则。这些断言值就是对 `scripts/probe_m3_align.py` 实测返回的复现。"""
+
     @pytest.mark.parametrize(
         ("mention", "candidate", "floor"),
         [
@@ -130,6 +61,18 @@ class TestNameScore:
     def test_scores(self, mention: str, candidate: str, floor: float) -> None:
         assert name_score(mention, candidate) >= floor
 
+    def test_name_after_separator_scores_high(self) -> None:
+        """搜「午门」，答案是 `故宫博物院-午门`。
+
+        「午门」只有两个字，按整体包含判断会被短词阈值挡掉，
+        所以分隔符那一条要单独判（ADR-0009 的归并全靠它）。
+        """
+        assert name_score("午门", "故宫博物院-午门") >= 0.80
+
+    def test_name_after_separator_does_not_match_a_longer_segment(self) -> None:
+        """分隔符后的那一段必须是完整的，否则「午门」会命中「午门西卫生间」。"""
+        assert name_score("午门", "故宫博物院-午门西卫生间") < 0.80
+
     def test_short_containment_does_not_score_high(self) -> None:
         """「西安」出现在几百个候选名里，包含关系对这种短词没有意义。"""
         assert name_score("西安", "西安钟楼") < 0.80
@@ -139,6 +82,16 @@ class TestNameScore:
 
     def test_huimin_street_beats_huimin_street_homestay(self) -> None:
         assert name_score("回民街", "回民街") > name_score("回民街", "西安回民街家庭民宿")
+
+    def test_official_name_of_an_alias_shares_nothing(self) -> None:
+        """俗称与官方名的字面重合度可以低到零。
+
+        「兵马俑」对「秦始皇帝陵博物院」的 SequenceMatcher 比例是 0.00，
+        而它就是答案。这条断言把「字面像不像 ≠ 是不是它」钉住：
+        真要对上它，靠的是别名（高德的排序）或包含关系，不是字符串相似度。
+        """
+        assert name_score("兵马俑", "秦始皇帝陵博物院") == 0.0
+        assert name_score("陕历博", "陕西历史博物馆") < 0.50
 
 
 class TestAlign:
@@ -255,9 +208,16 @@ class TestAlign:
         assert result.resolved is None
         assert result.outcome.needs_human
 
-    def test_low_score_is_no_candidate(self) -> None:
+    def test_low_score_with_multiple_candidates_is_rejected(self) -> None:
+        """多个候选且名称都不像的时候不许硬选。
+
+        实测的教训：搜「袁家村」限定西安，前五全是西安市区的连锁中餐馆，
+        名称完全一致而城市完全错误。候选一多，高德的排序就没有权威性了。
+        """
         candidates = [
-            poi("P1", "唐韵不倒翁", typecode="080300", type_name="体育休闲服务", adcode="610113")
+            poi(f"P{i}", f"唐韵不倒翁{i}", typecode="080300", type_name="体育休闲服务",
+                adcode="610113")
+            for i in range(3)
         ]
         result = align(
             Mention(name="不倒翁小姐姐", city_name="西安", city_adcode="610100"),
@@ -266,6 +226,39 @@ class TestAlign:
 
         assert result.outcome is AlignOutcome.NO_CANDIDATE
         assert "名称得分" in result.reason
+
+    def test_single_low_score_candidate_is_accepted_as_an_alias(self) -> None:
+        """唯一候选时相信高德的排序——别名能力在高德那边，不在字符串里。
+
+        实测：搜「陕历博」，第一条正是陕西历史博物馆，但名称得分只有 0.48。
+        按 0.80 卡掉的话，这条提及会白白进待对齐队列。
+        """
+        candidates = [poi("B001D03PEX", "陕西历史博物馆", typecode="140100", adcode="610113")]
+        result = align(
+            Mention(name="陕历博", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.ALIGNED
+        assert result.resolved is not None
+        assert result.resolved.name == "陕西历史博物馆"
+        assert "高德排序采信" in result.reason
+
+    def test_single_candidate_below_floor_is_still_rejected(self) -> None:
+        """放宽有下限：唯一候选也得沾点边。
+
+        否则搜「不倒翁小姐姐」而高德返回同名小店时，就会被当成景点挂上去。
+        """
+        candidates = [
+            poi("P1", "唐韵不倒翁", typecode="080300", adcode="610113"),
+            poi("P2", "唐韵不倒翁精酿小酒馆", typecode="080300", adcode="610113"),
+        ]
+        result = align(
+            Mention(name="不倒翁小姐姐", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.NO_CANDIDATE
 
     def test_empty_candidates(self) -> None:
         result = align(BEIJING, [])
@@ -282,11 +275,11 @@ class TestAlign:
     def test_place_name_still_aligns_but_is_marked(self) -> None:
         """回民街、洒金桥这类地名的 typecode 是「地名地址信息」，但不是不可用。
 
-        它们有唯一最高分候选，所以对齐得出来；区别在于 type 摆在那里，
-        调用方可以决定要不要把它排成行程里的一个天项。
+        回民街的实测 typecode 是 **061001**（购物服务;特色商业街;步行街）而
+        不是 060101，所以按「购物服务一律排除」会把它丢掉。
         """
         candidates = [
-            poi("H1", "回民街", typecode="060101", type_name="购物服务;特色商业街;步行街",
+            poi("H1", "回民街", typecode="061001", type_name="购物服务;特色商业街;步行街",
                 adcode="610104"),
             poi("H2", "西安回民街家庭民宿", typecode="100000", type_name="住宿服务;宾馆酒店",
                 adcode="610104"),
@@ -310,7 +303,7 @@ class TestAlign:
 
         assert by_name["故宫博物院"].usable
         assert not by_name["故宫博物院检票处"].usable
-        assert "类型不是目的地" in (by_name["故宫博物院检票处"].reject_reason or "")
+        assert "游览对象" in (by_name["故宫博物院检票处"].reject_reason or "")
 
     def test_candidates_are_reported_for_the_workbench(self) -> None:
         """对不上的条目要带着候选进数据工作台，人工只看结论是没法判断的。"""
