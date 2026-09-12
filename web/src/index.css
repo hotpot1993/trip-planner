@@ -1,34 +1,80 @@
 @import 'tailwindcss';
 
-/* 本地优先的自用工具：先定一个克制的深色底，正式的视觉设计留到 M1 再做 */
+/*
+ * 设计方向：青绿山水 + 木刻本
+ *
+ * 路书是中文旅行里对「完整行程文档」的固有叫法。它的视觉世界不是通用的
+ * 旅游 App，而是两样东西：青绿山水的石青石绿，与木刻本的字。
+ *
+ * 关键取舍：
+ * - 石青是结构色。路线的主线、站名、层级都由它承担。
+ * - 朱砂**只用于预约提醒与避坑**，不作装饰。整个界面里唯一的高能量颜色
+ *   留给「会让你白跑一趟」的信息，这是产品最核心的价值主张。
+ * - 字体只用系统字体。本地优先 + 离线可读意味着不能依赖任何在线字体
+ *   （境内也拉不到 Google Fonts）。
+ */
+
 @theme {
-  --color-ink-950: oklch(0.18 0.012 250);
-  --color-ink-900: oklch(0.23 0.014 250);
-  --color-ink-800: oklch(0.3 0.016 250);
-  --color-ink-600: oklch(0.55 0.014 250);
-  --color-ink-300: oklch(0.78 0.01 250);
-  --color-ink-100: oklch(0.94 0.006 250);
-  --color-jade-500: oklch(0.7 0.13 165);
-  --color-amber-450: oklch(0.78 0.14 75);
-  --color-rose-450: oklch(0.68 0.17 20);
+  /* 纸与墨 */
+  --color-paper: #e8ecee; /* 冷调纸面，不是奶油色 */
+  --color-paper-card: #f7f8f6; /* 卡片：更亮一档的纸 */
+  --color-paper-sunk: #dde2e4; /* 凹陷区：未安排的天、空状态 */
+  --color-ink: #1f2422;
+  --color-ink-2: #525b57;
+  --color-ink-3: #838b86;
+  --color-rule: #c3cac6; /* 分隔与驿道线 */
+
+  /* 青绿 */
+  --color-azurite: #2c5b7a; /* 石青：主结构色 */
+  --color-azurite-soft: #d3e0e8;
+  --color-malachite: #4e7a5c; /* 石绿：正向、打卡 */
+  --color-malachite-soft: #d8e4da;
+
+  /* 朱砂：语义色，只用于预约提醒与避坑 */
+  --color-cinnabar: #b23a2c;
+  --color-cinnabar-soft: #f2ddd8;
+
+  --font-display:
+    'Songti SC', 'Source Han Serif SC', 'Noto Serif CJK SC', 'SimSun', 'STSong',
+    Georgia, serif;
+  --font-body:
+    'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', system-ui,
+    -apple-system, 'Segoe UI', sans-serif;
+  --font-data:
+    ui-monospace, 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
   margin: 0;
-  background-color: var(--color-ink-950);
-  color: var(--color-ink-100);
-  font-family:
-    'Noto Sans SC', system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei',
-    sans-serif;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
 }
 
-/* 数字与标识符用等宽，便于核对版本号与提交哈希 */
-.font-mono-num {
-  font-family: ui-monospace, 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+/* 数字与标识符用等宽 + 等宽数字，日期与时刻才能对齐 */
+.data {
+  font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
+}
+
+/* 键盘可达性：焦点必须看得见 */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-azurite);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* 尊重减少动效的偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

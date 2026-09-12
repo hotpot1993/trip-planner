@@ -179,6 +179,72 @@ def test_delete_missing_trip_returns_404(api_client, stub_cities) -> None:
     assert api_client.delete("/api/trips/trip_不存在").status_code == 404
 
 
+# ─── 改城市与天数 ────────────────────────────────────────────
+
+
+def test_update_stays_recomputes_total_days(api_client, stub_cities) -> None:
+    trip_id = _create(api_client, cities=[{"name": "南京", "days": 3}]).json()["id"]
+
+    response = api_client.put(
+        f"/api/trips/{trip_id}/stays", json={"cities": [{"name": "南京", "days": 5}]}
+    )
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["total_days"] == 5
+    assert body["end_date"] == "2026-10-05"
+    assert body["name"] == "南京 5 天"
+
+
+def test_update_stays_can_add_a_city(api_client, monkeypatch, stub_cities) -> None:
+    from lushu.services import trip_service
+
+    stub_cities["西安"] = CityMatch(name="西安", adcode="610100", level="city")
+    monkeypatch.setattr(
+        trip_service, "resolve_city", lambda name, **kw: stub_cities.get(name)
+    )
+
+    trip_id = _create(api_client, cities=[{"name": "南京", "days": 2}]).json()["id"]
+    body = api_client.put(
+        f"/api/trips/{trip_id}/stays",
+        json={"cities": [{"name": "南京", "days": 2}, {"name": "西安", "days": 3}]},
+    ).json()
+
+    assert body["city_names"] == ["南京", "西安"]
+    assert body["total_days"] == 5
+    assert body["stays"][1]["days"][0]["date"] == "2026-10-03"
+
+
+def test_update_stays_can_move_the_start_date(api_client, stub_cities) -> None:
+    trip_id = _create(api_client, cities=[{"name": "南京", "days": 2}]).json()["id"]
+    body = api_client.put(
+        f"/api/trips/{trip_id}/stays",
+        json={"cities": [{"name": "南京", "days": 2}], "start_date": "2026-12-24"},
+    ).json()
+
+    assert body["start_date"] == "2026-12-24"
+    assert body["stays"][0]["days"][0]["date"] == "2026-12-24"
+
+
+def test_update_stays_on_missing_trip_returns_404(api_client, stub_cities) -> None:
+    response = api_client.put(
+        "/api/trips/trip_不存在/stays", json={"cities": [{"name": "南京", "days": 1}]}
+    )
+    assert response.status_code == 404
+
+
+def test_update_stays_rejects_unknown_city(api_client, stub_cities) -> None:
+    trip_id = _create(api_client, cities=[{"name": "南京", "days": 2}]).json()["id"]
+    response = api_client.put(
+        f"/api/trips/{trip_id}/stays", json={"cities": [{"name": "查不到", "days": 2}]}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "city_not_found"
+    # 失败后原行程必须完好
+    assert api_client.get(f"/api/trips/{trip_id}").json()["total_days"] == 2
+
+
 # ─── 城市解析接口 ────────────────────────────────────────────
 
 

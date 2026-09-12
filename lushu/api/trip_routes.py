@@ -44,6 +44,13 @@ class PlanIn(BaseModel):
     name: str | None = None
 
 
+class UpdateStaysIn(BaseModel):
+    """改城市停留与天数。"""
+
+    cities: list[CitySpecIn] = Field(min_length=1)
+    start_date: date | None = Field(default=None, description="留空则沿用原来的出发日期")
+
+
 # ─── 响应体 ──────────────────────────────────────────────────
 
 
@@ -239,6 +246,28 @@ def confirm_trip(trip_id: str) -> TripDetailOut:
     if confirmed is None:  # pragma: no cover
         raise HTTPException(status_code=500, detail="确认后立即读取失败")
     return _detail_out(confirmed)
+
+
+@router.put("/trips/{trip_id}/stays", response_model=TripDetailOut, summary="改城市与天数")
+async def update_stays(trip_id: str, payload: UpdateStaysIn) -> TripDetailOut:
+    """重新设置城市停留与天数，总行程天数随之重算。
+
+    这是「用户可动态添加城市并设置各城市停留天数，系统自动计算总行程天数」
+    的落点。仍然存在的天（日期与城市都没变）会保留原有内容。
+    """
+    if trip_service.get_trip(trip_id) is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    specs = [
+        StaySpec(city_name=c.name, stay_days=c.days, city_adcode=c.adcode)
+        for c in payload.cities
+    ]
+    await trip_service.update_stays(trip_id, specs=specs, start_date=payload.start_date)
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="更新后立即读取失败")
+    return _detail_out(stored)
 
 
 @router.post(

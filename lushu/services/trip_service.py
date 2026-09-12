@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
-from lushu.domain.planned import PlannedTrip, StaySpec, lay_out
+from lushu.domain.planned import PlannedDay, PlannedStay, PlannedTrip, StaySpec, lay_out
 from lushu.engine import PlanStage, resolve_city, run_plan
 from lushu.services.plan_converter import plan_to_trip
 from lushu.services.trip_store import (
@@ -43,7 +43,9 @@ __all__ = [
     "plan_and_save",
     "replan_trip",
     "replace_plan",
+    "resolve_specs",
     "set_status",
+    "update_stays",
 ]
 
 
@@ -141,6 +143,99 @@ def _default_name(specs: Sequence[StaySpec]) -> str:
     cities = "、".join(s.city_name for s in specs)
     total = sum(s.stay_days for s in specs)
     return f"{cities} {total} 天"
+
+
+# ─── 改城市与天数 ────────────────────────────────────────────
+
+
+async def update_stays(
+    trip_id: str,
+    *,
+    specs: Sequence[StaySpec],
+    start_date: date | None = None,
+) -> PlannedTrip:
+    """改城市停留与天数，重新铺排日期，保留仍然存在的天项。
+
+    「北京 3 天 + 西安 3 天」改成「北京 2 天 + 西安 3 天」之后，总天数由 6 变 5，
+    日期整体前移。保留规则是**按「日期 + 城市」配对**：
+
+    - 某一天新布局后仍然存在（日期没变、城市也没变），它原有的事项原样保留
+    - 被删掉的天连同它的事项一起消失
+    - 改了城市名等于换了一座城市，那几天的事项不保留
+
+    这个规则不完美——把北京从 3 天改成 2 天，第 3 天的事项会消失而不是顺延。
+    顺延需要判断哪些事项值得保留，那是一件需要用户参与的事，留到 M2 做差异确认。
+    """
+    current = load_trip(trip_id)
+    if current is None:
+        raise LookupError(f"行程不存在：{trip_id}")
+
+    resolved = await resolve_specs(specs)
+    anchor = start_date or current.plan.start_date
+    laid_out = lay_out(anchor, resolved)
+    stays = _preserve_items(current.plan, laid_out)
+
+    name = current.name
+    if current.name == _default_name_from_stays(current.plan):
+        # 名字是自动生成的，城市或天数变了就跟着更新，否则会名不副实
+        name = _default_name(resolved)
+
+    draft = PlannedTrip(
+        name=name,
+        start_date=anchor,
+        stays=stays,
+        query=current.plan.query,
+    )
+    replace_plan(trip_id, draft)
+    return draft
+
+
+def _default_name_from_stays(plan: PlannedTrip) -> str:
+    cities = "、".join(s.city_name for s in plan.stays)
+    return f"{cities} {plan.total_days} 天"
+
+
+def _preserve_items(
+    current: PlannedTrip, laid_out: tuple[PlannedStay, ...]
+) -> tuple[PlannedStay, ...]:
+    """把旧布局里仍然对得上的内容搬到新布局上。
+
+    主题与天项都要搬。主题是引擎按当天景点归纳出来的一句话（如「钟山风景区」），
+    它和天项一样是内容，只搬天项会让改完天数的那一天变成「有景点但没主题」。
+    """
+    kept: dict[tuple[date, str], PlannedDay] = {
+        (day.day, stay.city_name): day
+        for stay in current.stays
+        for day in stay.days
+        if day.items or day.theme
+    }
+
+    preserved: list[PlannedStay] = []
+    for stay in laid_out:
+        days = tuple(
+            _merge_day(day, kept.get((day.day, stay.city_name))) for day in stay.days
+        )
+        preserved.append(
+            PlannedStay(
+                city_name=stay.city_name,
+                city_adcode=stay.city_adcode,
+                seq=stay.seq,
+                days=days,
+            )
+        )
+    return tuple(preserved)
+
+
+def _merge_day(layout_day: PlannedDay, previous: PlannedDay | None) -> PlannedDay:
+    """把旧内容并进新铺出来的一天。旧的一天不存在时原样返回空的那天。"""
+    if previous is None:
+        return layout_day
+    return PlannedDay(
+        day=layout_day.day,
+        seq_in_stay=layout_day.seq_in_stay,
+        theme=previous.theme,
+        items=previous.items,
+    )
 
 
 # ─── 规划生成 ────────────────────────────────────────────────
