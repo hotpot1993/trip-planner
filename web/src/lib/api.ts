@@ -62,6 +62,85 @@ export interface StayOut {
   days: DayOut[]
 }
 
+export interface TransferAlternative {
+  service_no: string
+  from_station: string
+  to_station: string
+  dep_time: string
+  arr_time: string
+  duration_min: number | null
+  price: number | null
+  is_reference_price: boolean
+  has_tickets: boolean
+}
+
+export interface TransferOut {
+  id: string
+  from_city_name: string
+  to_city_name: string
+  /** 全行程内从 0 开始的天序号。转移是这一天的一部分，不是独立的一天。 */
+  day_index: number
+  day: string
+  mode: string
+  service_no: string | null
+  from_station: string | null
+  to_station: string | null
+  dep_time: string | null
+  arr_time: string | null
+  duration_min: number | null
+  price: number | null
+  price_source: string
+  is_reference_price: boolean
+  has_tickets: boolean | null
+  advice_reason: string | null
+  note: string | null
+  alternatives: TransferAlternative[]
+}
+
+export interface BudgetItemOut {
+  category: string
+  label: string
+  amount: number
+  currency: string
+  is_reference_price: boolean
+  source: string | null
+  note: string | null
+}
+
+export interface BudgetPanelOut {
+  intercity: BudgetItemOut[]
+  others: BudgetItemOut[]
+  intercity_total: number
+  other_total: number
+  total: number
+  has_reference_prices: boolean
+}
+
+export interface DayWeatherOut {
+  date: string
+  text: string
+  night_text: string | null
+  temp_min: number | null
+  temp_max: number | null
+  temperature_text: string
+  precipitation_probability: number | null
+  is_bad_outdoor: boolean
+}
+
+export interface CityWeatherOut {
+  city_name: string
+  source: string
+  source_label: string
+  days: DayWeatherOut[]
+  note: string | null
+}
+
+export interface TripWeatherOut {
+  start_date: string
+  end_date: string
+  cities: CityWeatherOut[]
+}
+
 export interface TripSummaryOut {
   id: string
   name: string
@@ -84,6 +163,8 @@ export interface TripDetailOut {
   created_at: string
   updated_at: string
   stays: StayOut[]
+  transfers: TransferOut[]
+  budget: BudgetPanelOut
 }
 
 export interface CityOut {
@@ -205,6 +286,14 @@ export const updateStays = (tripId: string, payload: UpdateStaysIn): Promise<Tri
     ...jsonInit(payload),
     method: 'PUT',
   })
+
+/** 重新查一遍城际车次。会真的问 12306，慢几秒。 */
+export const refreshTransfers = (tripId: string): Promise<TransferOut[]> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/transfers/refresh`, { method: 'POST' })
+
+/** 按城市分别取天气预报。 */
+export const fetchTripWeather = (tripId: string): Promise<TripWeatherOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/weather`)
 
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)

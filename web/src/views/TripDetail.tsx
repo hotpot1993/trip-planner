@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { BudgetPanel } from '@/components/BudgetPanel'
 import { RouteRail } from '@/components/RouteRail'
+import { WeatherPanel } from '@/components/WeatherPanel'
 import {
   ApiError,
   confirmTrip,
   deleteTrip,
+  fetchTripWeather,
   getTrip,
+  refreshTransfers,
   updateStays,
   type TripDetailOut,
+  type TripWeatherOut,
 } from '@/lib/api'
 import { dateRange, shortStamp } from '@/lib/format'
 import { hrefFor, navigate } from '@/lib/router'
@@ -17,6 +22,9 @@ import { DayStepper } from './TripList'
 export function TripDetail({ tripId }: { tripId: string }) {
   const [trip, setTrip] = useState<TripDetailOut | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [weather, setWeather] = useState<TripWeatherOut | null>(null)
+  const [weatherLoading, setWeatherLoading] = useState(false)
+  const [weatherError, setWeatherError] = useState<string | null>(null)
 
   const reload = useCallback(() => {
     setError(null)
@@ -29,6 +37,17 @@ export function TripDetail({ tripId }: { tripId: string }) {
   }, [tripId])
 
   useEffect(reload, [reload])
+
+  const loadWeather = useCallback(() => {
+    setWeatherLoading(true)
+    setWeatherError(null)
+    fetchTripWeather(tripId)
+      .then(setWeather)
+      .catch((cause: unknown) => {
+        setWeatherError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => setWeatherLoading(false))
+  }, [tripId])
 
   if (error) {
     return (
@@ -51,14 +70,62 @@ export function TripDetail({ tripId }: { tripId: string }) {
       <TripHeader trip={trip} onChanged={reload} />
 
       <section>
-        <h2 className="font-display text-xl">行程</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+          <h2 className="font-display text-xl">行程</h2>
+          {trip.stays.length > 1 ? (
+            <RefreshTransfers tripId={trip.id} onDone={reload} />
+          ) : null}
+        </div>
         <p className="mt-1 mb-5 text-sm text-ink-2">
           实心圆点是已经排好的天，空心是还没安排的。总天数由各城市停留天数相加得出。
+          城际转移画在它落到的那一天里。
         </p>
-        <RouteRail stays={trip.stays} />
+        <RouteRail stays={trip.stays} transfers={trip.transfers} />
       </section>
 
+      <BudgetPanel budget={trip.budget} />
+
+      <WeatherPanel
+        weather={weather}
+        loading={weatherLoading}
+        error={weatherError}
+        onLoad={loadWeather}
+      />
+
       <StaysEditor trip={trip} onSaved={reload} />
+    </div>
+  )
+}
+
+/** 重新查一遍城际车次。会真的问 12306，所以要有进行中的反馈。 */
+function RefreshTransfers({ tripId, onDone }: { tripId: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await refreshTransfers(tripId)
+      onDone()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-baseline gap-x-3">
+      {error ? <span className="text-xs text-cinnabar">{error}</span> : null}
+      <button
+        type="button"
+        onClick={run}
+        disabled={busy}
+        className="text-sm text-azurite underline disabled:opacity-40"
+      >
+        {busy ? '查询车次中…' : '刷新城际车次'}
+      </button>
     </div>
   )
 }

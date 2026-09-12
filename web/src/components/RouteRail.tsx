@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
-import type { DayOut, ItemOut, StayOut } from '@/lib/api'
+import type { DayOut, ItemOut, StayOut, TransferOut } from '@/lib/api'
 import { kindLabel, monthDay, weekday } from '@/lib/format'
 
 /**
@@ -11,7 +11,8 @@ import { kindLabel, monthDay, weekday } from '@/lib/format'
  *
  * - 圆点的大小区分「城市停留」与「一天」
  * - 圆点的实心 / 空心区分「已安排」与「未安排」
- * - 城际转移在 M2 会作为第三种节点插进这条线，且那一段线改为虚线
+ * - **城际转移画在它落到的那一天里面**，而不是两个城市之间的独立节点：
+ *   转移是那一天的一部分（ADR-0004），画在站与站之间会让人以为它不占当天。
  *
  * 把城市与天放进同一个扁平序列，是为了让这条线真的连续。嵌套列表在视觉上
  * 会断成几截，那样它就退化成普通的日程列表了。
@@ -19,7 +20,7 @@ import { kindLabel, monthDay, weekday } from '@/lib/format'
 
 type RailNode =
   | { kind: 'station'; key: string; stay: StayOut; index: number }
-  | { kind: 'day'; key: string; stay: StayOut; day: DayOut }
+  | { kind: 'day'; key: string; stay: StayOut; day: DayOut; dayIndex: number }
 
 const CN_NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'] as const
 
@@ -29,16 +30,31 @@ function stationLabel(index: number): string {
 
 function buildNodes(stays: StayOut[]): RailNode[] {
   const nodes: RailNode[] = []
+  let dayIndex = 0
+
   stays.forEach((stay, index) => {
     nodes.push({ kind: 'station', key: `station-${index}`, stay, index })
     stay.days.forEach((day) => {
-      nodes.push({ kind: 'day', key: `day-${index}-${day.date}`, stay, day })
+      nodes.push({
+        kind: 'day',
+        key: `day-${index}-${day.date}`,
+        stay,
+        day,
+        dayIndex,
+      })
+      dayIndex += 1
     })
   })
   return nodes
 }
 
-export function RouteRail({ stays }: { stays: StayOut[] }) {
+export function RouteRail({
+  stays,
+  transfers = [],
+}: {
+  stays: StayOut[]
+  transfers?: TransferOut[]
+}) {
   const nodes = buildNodes(stays)
 
   if (nodes.length === 0) {
@@ -49,8 +65,17 @@ export function RouteRail({ stays }: { stays: StayOut[] }) {
     )
   }
 
+  const byDay = new Map<number, TransferOut[]>()
+  for (const transfer of transfers) {
+    const list = byDay.get(transfer.day_index)
+    if (list) list.push(transfer)
+    else byDay.set(transfer.day_index, [transfer])
+  }
+
   const hasAnyItem = nodes.some(
-    (node) => node.kind === 'day' && node.day.items.length > 0,
+    (node) =>
+      node.kind === 'day' &&
+      (node.day.items.length > 0 || byDay.has(node.dayIndex)),
   )
 
   return (
@@ -63,18 +88,40 @@ export function RouteRail({ stays }: { stays: StayOut[] }) {
       )}
       <ol className="m-0 list-none p-0">
         {nodes.map((node, index) => (
-          <RailRow key={node.key} node={node} isLast={index === nodes.length - 1} />
+          <RailRow
+            key={node.key}
+            node={node}
+            isLast={index === nodes.length - 1}
+            transfers={node.kind === 'day' ? (byDay.get(node.dayIndex) ?? []) : []}
+          />
         ))}
       </ol>
     </div>
   )
 }
 
-function RailRow({ node, isLast }: { node: RailNode; isLast: boolean }) {
+function RailRow({
+  node,
+  isLast,
+  transfers,
+}: {
+  node: RailNode
+  isLast: boolean
+  transfers: TransferOut[]
+}) {
+  const hasContent = node.kind === 'day' ? node.day.items.length > 0 || transfers.length > 0 : true
+
   return (
     <li className="grid grid-cols-[26px_1fr]">
-      <RailGutter line={!isLast} marker={node.kind === 'station' ? <StationDot /> : <DayTick filled={node.day.items.length > 0} />} />
-      {node.kind === 'station' ? <StationBody node={node} /> : <DayBody day={node.day} />}
+      <RailGutter
+        line={!isLast}
+        marker={node.kind === 'station' ? <StationDot /> : <DayTick filled={hasContent} />}
+      />
+      {node.kind === 'station' ? (
+        <StationBody node={node} />
+      ) : (
+        <DayBody day={node.day} transfers={transfers} />
+      )}
     </li>
   )
 }
@@ -130,7 +177,7 @@ function StationBody({
   )
 }
 
-function DayBody({ day }: { day: DayOut }) {
+function DayBody({ day, transfers }: { day: DayOut; transfers: TransferOut[] }) {
   const hasItems = day.items.length > 0
 
   return (
@@ -143,17 +190,121 @@ function DayBody({ day }: { day: DayOut }) {
         ) : null}
       </div>
 
+      {transfers.map((transfer) => (
+        <TransferBlock key={transfer.id} transfer={transfer} />
+      ))}
+
       {hasItems ? (
         <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
           {day.items.map((item, i) => (
             <ItemRow key={`${day.date}-${i}`} item={item} />
           ))}
         </ul>
-      ) : (
+      ) : transfers.length === 0 ? (
         <p className="mt-1 text-xs text-ink-3">尚未安排</p>
-      )}
+      ) : null}
     </div>
   )
+}
+
+/** 城际转移。它落在这一天里，所以画在这一天里。 */
+function TransferBlock({ transfer }: { transfer: TransferOut }) {
+  const [expanded, setExpanded] = useState(false)
+  const minutes = transfer.duration_min
+  const duration = minutes === null ? null : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+
+  return (
+    <div className="mt-2 rounded border border-azurite/30 bg-azurite-soft/40 px-3 py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
+        <span className="text-azurite">⇢</span>
+        <span className="text-ink">
+          {transfer.from_city_name} → {transfer.to_city_name}
+        </span>
+        <span className="text-xs text-ink-3">{modeLabel(transfer.mode)}</span>
+      </div>
+
+      {transfer.service_no ? (
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-3 text-sm">
+          <span className="data text-ink">{transfer.service_no}</span>
+          <span className="text-ink-2">
+            {transfer.from_station} → {transfer.to_station}
+          </span>
+          <span className="data text-ink-2">
+            {transfer.dep_time}–{transfer.arr_time}
+          </span>
+          {duration ? <span className="data text-xs text-ink-3">{duration}</span> : null}
+          {transfer.price !== null ? (
+            <span className="data text-sm text-ink">
+              ¥{transfer.price}
+              {transfer.is_reference_price ? (
+                <span className="ml-1 text-xs text-ink-3">参考价</span>
+              ) : null}
+            </span>
+          ) : null}
+          {transfer.has_tickets === false ? (
+            <span className="text-xs text-ink-3">查询时已无票</span>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-1 text-sm text-ink-2">还没有查到具体车次</p>
+      )}
+
+      {transfer.advice_reason ? (
+        <p className="mt-1 text-xs leading-relaxed text-ink-2">{transfer.advice_reason}</p>
+      ) : null}
+
+      {transfer.note ? (
+        <p className="mt-1 text-xs leading-relaxed text-ink-3">{transfer.note}</p>
+      ) : null}
+
+      {transfer.alternatives.length > 0 ? (
+        <>
+          <button
+            type="button"
+            className="mt-1.5 text-xs text-azurite underline"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? '收起备选' : `备选 ${transfer.alternatives.length} 个`}
+          </button>
+          {expanded ? (
+            <ul className="m-0 mt-1 list-none space-y-0.5 p-0">
+              {transfer.alternatives.map((option) => {
+                const mins = option.duration_min
+                return (
+                  <li key={option.service_no} className="flex flex-wrap gap-x-3 text-xs text-ink-2">
+                    <span className="data">{option.service_no}</span>
+                    <span className="data">
+                      {option.dep_time}–{option.arr_time}
+                    </span>
+                    {mins !== null ? (
+                      <span className="data">
+                        {Math.floor(mins / 60)}h{mins % 60}′
+                      </span>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function modeLabel(mode: string): string {
+  switch (mode) {
+    case 'rail':
+      return '铁路'
+    case 'air':
+      return '航空'
+    case 'coach':
+      return '大巴'
+    case 'drive':
+      return '自驾'
+    default:
+      return mode
+  }
 }
 
 function ItemRow({ item }: { item: ItemOut }) {
