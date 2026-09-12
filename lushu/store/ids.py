@@ -18,6 +18,14 @@ LEG = "leg"
 BUDGET = "bud"
 WORKBENCH = "wb"
 
+# 数据链路（M3）
+SOURCE = "src"  # 攻略素材
+SOURCE_GROUP = "grp"  # 独立来源组
+CLAIM = "clm"  # 攻略结论
+EVIDENCE = "ev"  # 结论的证据
+ALIGN_TASK = "at"  # 待对齐
+EXTRACTION_RUN = "er"  # 一次提纯运行
+
 
 def new_id(prefix: str) -> str:
     """生成一个带前缀的标识符，例如 `trip_3f9a2c81d4e7`。"""
