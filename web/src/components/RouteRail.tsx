@@ -164,10 +164,15 @@ function ItemRow({ item }: { item: ItemOut }) {
   return (
     <li className="flex items-baseline gap-x-3 text-sm">
       <span className="data w-11 shrink-0 text-ink-3">{item.start_time ?? '——'}</span>
-      <span className="min-w-0 flex-1">
-        {item.title}
+
+      {/* 时间轴要的是可扫读：地址单行截断，悬停看全文。
+          高德的地址常带「(地铁站步行X分钟)」这类长后缀，任它折行会把节奏打散。 */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-x-2">
+        <span className="shrink-0">{item.title}</span>
         {item.address ? (
-          <span className="ml-2 text-xs text-ink-3">{item.address}</span>
+          <span className="truncate text-xs text-ink-3" title={item.address}>
+            {item.address}
+          </span>
         ) : null}
       </span>
 

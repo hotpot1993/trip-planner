@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
+from lushu import config
 from lushu.domain.planned import PlannedDay, PlannedStay, PlannedTrip, StaySpec, lay_out
 from lushu.engine import PlanStage, resolve_city, run_plan
 from lushu.services.plan_converter import plan_to_trip
@@ -32,6 +33,7 @@ from lushu.services.trip_store import (
 
 __all__ = [
     "CityNotFoundError",
+    "ConfigMissingError",
     "MissingInputError",
     "PlanRequest",
     "PlannedTripResult",
@@ -69,6 +71,20 @@ class MissingInputError(RuntimeError):
         super().__init__("还需要补充：" + "、".join(self.missing_fields))
 
 
+class ConfigMissingError(RuntimeError):
+    """缺少调用引擎所必需的配置。
+
+    提前检查而不是等引擎在深处抛一个裸 RuntimeError——那样错误会被归成「程序
+    缺陷」，而它其实是「环境没配好」，两者的处置方式完全不同。
+    """
+
+    def __init__(self, names: Sequence[str]) -> None:
+        self.missing_keys = tuple(names)
+        super().__init__(
+            "缺少必需的配置：" + "、".join(self.missing_keys) + "。请在 .env.local 里填好后重启服务。"
+        )
+
+
 @dataclass(frozen=True)
 class PlanRequest:
     """一次规划请求。"""
@@ -89,6 +105,17 @@ class PlannedTripResult:
 
 
 # ─── 城市解析 ────────────────────────────────────────────────
+
+
+def _require_engine_config() -> None:
+    """跑流水线之前先确认配置齐了。
+
+    引擎在深处抛的裸 RuntimeError 会被归成「程序缺陷」，而缺 Key 其实是
+    「环境没配好」。两者的处置方式完全不同，所以在入口就把它们分开。
+    """
+    missing = config.missing_required_keys()
+    if missing:
+        raise ConfigMissingError(missing)
 
 
 async def resolve_specs(specs: Sequence[StaySpec]) -> tuple[StaySpec, ...]:
@@ -250,6 +277,7 @@ async def plan_and_save(
 
     引擎不可用（缺 Key、网络失败）时异常会原样抛出，由接口层翻译成可读提示。
     """
+    _require_engine_config()
     outcome = await run_plan(
         request.query,
         on_stage=on_stage,
@@ -275,6 +303,7 @@ async def replan_trip(
     这是破坏性操作：用户手工调过的顺序会被覆盖，所以调用方必须先弹
     「旧 → 新」差异让用户确认（Q48）。
     """
+    _require_engine_config()
     outcome = await run_plan(
         request.query,
         on_stage=on_stage,

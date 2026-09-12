@@ -37,6 +37,34 @@ class PlanOutcome:
     history: list[str] = field(default_factory=list)
 
 
+def compose_query(
+    query: str,
+    *,
+    start_date: date | None = None,
+    days: int | None = None,
+    destination: str | None = None,
+) -> str:
+    """把结构化的出行条件折进需求原话。
+
+    **这一步不能省。** 引擎的 `intent` 节点只从 query 文本里抽取目的地与日期
+    （`effective_query = state.query`），然后把初始状态里的 `travel_start_date`、
+    `travel_end_date`、`days`、`destination` **无条件覆盖掉**。所以「用户在界面上
+    填了出发日期」这件事，必须变成一句人话交给它，否则填了等于没填——而且不会
+    报错，只会反过来说「还需要补充出行日期」。
+    """
+    text = query.strip()
+    conditions: list[str] = []
+    if destination:
+        conditions.append(f"目的地是{destination}")
+    if start_date is not None:
+        conditions.append(f"{start_date.isoformat()} 出发")
+    if days is not None:
+        conditions.append(f"共 {days} 天")
+    if not conditions:
+        return text
+    return f"{text}（{'，'.join(conditions)}）"
+
+
 async def stream_plan(
     query: str,
     *,
@@ -47,8 +75,8 @@ async def stream_plan(
 ) -> AsyncIterator[PlanStage | PlanOutcome]:
     """运行规划流水线，逐个产出阶段事件，最后产出一个 PlanOutcome。
 
-    只传引擎认识的覆盖项，且只在有值时才传——`TravelPlanState` 对未提供的
-    字段用默认值，显式传 None 会覆盖掉引擎自己的推导。
+    结构化的出行条件会折进 query（见 `compose_query`），同时也作为初始状态传入；
+    真正起作用的是前者。
     """
     # 延迟导入：必须先加载 config，再触碰引擎
     from third_party.floattrip.planning.graph import run_stream
@@ -63,8 +91,12 @@ async def stream_plan(
     if max_review_rounds is not None:
         overrides["max_review_rounds"] = max_review_rounds
 
+    effective_query = compose_query(
+        query, start_date=start_date, days=days, destination=destination
+    )
+
     stages: list[PlanStage] = []
-    async for event in run_stream(query, **overrides):
+    async for event in run_stream(effective_query, **overrides):
         if event.get("type") == "stage":
             stage = PlanStage(
                 node=str(event.get("node") or ""),
@@ -86,6 +118,9 @@ async def run_plan(
     query: str,
     *,
     on_stage: Callable[[PlanStage], None] | None = None,
+    start_date: date | None = None,
+    days: int | None = None,
+    destination: str | None = None,
     **overrides: Any,
 ) -> PlanOutcome:
     """跑完流水线并返回结果。
@@ -94,7 +129,9 @@ async def run_plan(
     不改变流水线本身的行为。
     """
     outcome: PlanOutcome | None = None
-    async for event in stream_plan(query, **overrides):
+    async for event in stream_plan(
+        query, start_date=start_date, days=days, destination=destination, **overrides
+    ):
         if isinstance(event, PlanStage):
             if on_stage is not None:
                 on_stage(event)

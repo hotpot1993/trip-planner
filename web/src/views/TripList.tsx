@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, createTrip, listTrips, type TripSummaryOut } from '@/lib/api'
+import { PlanCard, describeApiError } from '@/components/PlanCard'
+import { createTrip, listTrips, type TripSummaryOut } from '@/lib/api'
 import { shortStamp } from '@/lib/format'
 import { hrefFor } from '@/lib/router'
+
+const inputClass =
+  'rounded border border-rule bg-paper px-2.5 py-1.5 text-sm text-ink outline-none focus-visible:border-azurite'
 
 export function TripList() {
   const [trips, setTrips] = useState<TripSummaryOut[] | null>(null)
@@ -14,7 +18,7 @@ export function TripList() {
       .then(setTrips)
       .catch((cause: unknown) => {
         setTrips([])
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(describeApiError(cause).message)
       })
   }, [])
 
@@ -22,7 +26,11 @@ export function TripList() {
 
   return (
     <div className="space-y-8">
-      <CreateTripCard onCreated={reload} />
+      {/* 对话式是主入口：说一句话就生成 */}
+      <PlanCard onCreated={reload} />
+
+      {/* 手工铺骨架是次要路径，折起来不抢注意力 */}
+      <ManualCreate onCreated={reload} />
 
       <section>
         <h2 className="font-display text-xl">行程</h2>
@@ -37,7 +45,7 @@ export function TripList() {
           <p className="mt-3 text-sm text-ink-3">读取中…</p>
         ) : trips.length === 0 ? (
           <p className="mt-3 rounded border border-dashed border-rule px-4 py-8 text-center text-sm text-ink-3">
-            还没有行程。在上面填一座城市和天数就能开始。
+            还没有行程。在上面说一句想去哪，就能生成第一份。
           </p>
         ) : (
           <ul className="mt-3 m-0 list-none space-y-2 p-0">
@@ -76,24 +84,21 @@ function TripRow({ trip }: { trip: TripSummaryOut }) {
   )
 }
 
-// ─── 新建 ────────────────────────────────────────────────────
+// ─── 手工铺骨架 ──────────────────────────────────────────────
 
 interface CityDraft {
   name: string
   days: number
 }
 
-const inputClass =
-  'rounded border border-rule bg-paper-card px-2.5 py-1.5 text-sm text-ink outline-none focus-visible:border-azurite'
-
-/** 本地时区的今天，用来做日期输入框的默认值与下限。 */
+/** 本地时区的今天，用来做日期输入框的默认值。 */
 function todayIso(): string {
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
-function CreateTripCard({ onCreated }: { onCreated: () => void }) {
+function ManualCreate({ onCreated }: { onCreated: () => void }) {
   const [startDate, setStartDate] = useState(todayIso)
   const [cities, setCities] = useState<CityDraft[]>([{ name: '', days: 3 }])
   const [busy, setBusy] = useState(false)
@@ -119,21 +124,20 @@ function CreateTripCard({ onCreated }: { onCreated: () => void }) {
       setCities([{ name: '', days: 3 }])
       onCreated()
     } catch (cause) {
-      if (cause instanceof ApiError) {
-        setError({ message: cause.message, hint: cause.hint })
-      } else {
-        setError({ message: cause instanceof Error ? cause.message : String(cause), hint: null })
-      }
+      setError(describeApiError(cause))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <section className="rounded border border-rule bg-paper-card p-5">
-      <h2 className="font-display text-xl">新建行程</h2>
-      <p className="mt-1 text-sm text-ink-2">
-        填城市与天数，日期会自动接续排下去。总天数由各城市天数相加得出。
+    <details className="rounded border border-rule bg-paper-card px-5 py-4">
+      <summary className="cursor-pointer text-sm text-ink-2 marker:text-ink-3">
+        或者手工铺一份空的行程骨架
+      </summary>
+
+      <p className="mt-3 text-sm text-ink-2">
+        只填城市与天数，日期会自动接续排下去。生成会让每一天都有内容，手工铺的则留空等你自己填。
       </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -201,9 +205,9 @@ function CreateTripCard({ onCreated }: { onCreated: () => void }) {
         onClick={submit}
         className="mt-4 rounded bg-azurite px-4 py-2 text-sm text-paper-card transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {busy ? '创建中…' : '创建行程'}
+        {busy ? '创建中…' : '创建骨架'}
       </button>
-    </section>
+    </details>
   )
 }
 

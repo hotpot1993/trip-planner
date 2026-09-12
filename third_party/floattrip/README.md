@@ -83,6 +83,7 @@
 2. **`core/database.py` 的默认库路径失效。** 它按 `parents[3] / "data" / "app.db"` 定位，现在会指向 `third_party/data/app.db`。处理方式是在 `lushu/engine/bootstrap.py` 里调用它自带的 `configure_database()`——上游留了这个接缝，正是为这类场景准备的。
 3. **表结构冲突。** `core/database.py` 的 `init_db()` 会建立上游自己的 13 张表（`users`、`itineraries`、`conversations`…），而本项目有自己的七域表结构。两者可以共存于同一个 SQLite 文件，但**行程数据以谁为准必须有明确决定**——这是 M1 的第一个设计任务，不能含糊过去。
 4. **隐式用户。** 上游的表普遍带 `user_id NOT NULL REFERENCES users(id)`，而本项目没有账号体系。需要一条固定的本地用户记录来满足外键。
+5. **意图节点会覆盖初始状态里的日期与目的地。** `planning/nodes.py` 的 `make_intent_node` 只从 `state.query` 文本里抽取目的地、出发日期、结束日期与天数，返回时**无条件覆盖** `TravelPlanState` 中的这四个字段。也就是说，把 `travel_start_date` 或 `days` 作为初始状态传进去是无效的——不会报错，只会反过来说「还需要补充出行日期」。本项目在 `lushu/engine/planning.py` 的 `compose_query()` 里把这些条件折成一句人话并进 query，那才是真正起作用的通道。
 
 ## 与上游再同步
 

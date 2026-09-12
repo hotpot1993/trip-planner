@@ -363,9 +363,16 @@ ENGINE_PLAN = {
 
 
 def _stub_engine(monkeypatch, plan: dict | None = None, *, missing: list[str] | None = None):
-    """替换 trip_service 里的引擎调用。"""
+    """替换 trip_service 里的引擎调用。
+
+    同时把配置"补齐"：流水线在跑之前会先检查 Key，而这里模拟的是
+    「环境配好了、引擎被替换掉」的场景。缺 Key 那条路径另有专门的测试。
+    """
     from lushu.engine import PlanOutcome, PlanStage
     from lushu.services import trip_service
+
+    monkeypatch.setenv("AMAP_API_KEY", "测试用的高德 Key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "测试用的模型 Key")
 
     async def fake_run_plan(query, *, on_stage=None, **overrides):
         if missing:
@@ -479,3 +486,21 @@ def test_plan_missing_input_returns_422(api_client, stub_cities, monkeypatch) ->
 
     assert response.status_code == 422
     assert response.json()["missing_fields"] == ["出发日期"]
+
+
+def test_plan_without_keys_reports_config_missing(api_client, stub_cities, monkeypatch) -> None:
+    """缺配置要走「环境没配好」这条路，而不是被归成程序缺陷。
+
+    这是真的跑一次才发现的：引擎在深处抛的裸 RuntimeError 被归成了 internal，
+    而它其实该告诉用户去填 .env.local。
+    """
+    monkeypatch.delenv("AMAP_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    response = api_client.post("/api/trips/plan", json={"query": "南京三日游"})
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] == "config_missing"
+    assert "AMAP_API_KEY" in body["missing_keys"]
+    assert "DEEPSEEK_API_KEY" in body["missing_keys"]

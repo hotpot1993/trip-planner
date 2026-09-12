@@ -112,6 +112,7 @@ export interface ApiErrorBody {
   message?: string
   detail?: string
   missing_fields?: string[]
+  missing_keys?: string[]
   city_names?: string[]
 }
 
@@ -129,6 +130,8 @@ export class ApiError extends Error {
   /** 用户能据以行动的建议。空屏与失败都该给方向，不该只给情绪。 */
   get hint(): string | null {
     switch (this.body.error) {
+      case 'config_missing':
+        return `在项目根目录的 .env.local 里填上这些，然后重启服务。`
       case 'city_not_found':
         return `试试换一种写法，或先在「运行状态」里确认高德 Key 已配置。`
       case 'missing_input':
@@ -205,3 +208,125 @@ export const updateStays = (tripId: string, payload: UpdateStaysIn): Promise<Tri
 
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)
+
+// ─── 生成（流式）──────────────────────────────────────────────
+
+export interface PlanIn {
+  query: string
+  start_date?: string
+  days?: number
+  name?: string
+}
+
+export type PlanEvent =
+  | { type: 'stage'; node: string; label: string }
+  | { type: 'done'; tripId: string; name: string; totalDays: number; cityNames: string[] }
+  | { type: 'error'; body: ApiErrorBody }
+
+/** 解析一帧 SSE：`event: 名\ndata: JSON`。 */
+function parseFrame(frame: string): PlanEvent | null {
+  let name = ''
+  let data = ''
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event: ')) name = line.slice('event: '.length)
+    else if (line.startsWith('data: ')) data = line.slice('data: '.length)
+  }
+  if (!name) return null
+
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(data) as Record<string, unknown>
+  } catch {
+    return null
+  }
+
+  switch (name) {
+    case 'stage':
+      return {
+        type: 'stage',
+        node: String(payload.node ?? ''),
+        label: String(payload.label ?? ''),
+      }
+    case 'done':
+      return {
+        type: 'done',
+        tripId: String(payload.trip_id ?? ''),
+        name: String(payload.name ?? ''),
+        totalDays: Number(payload.total_days ?? 0),
+        cityNames: Array.isArray(payload.city_names) ? (payload.city_names as string[]) : [],
+      }
+    case 'error':
+      return { type: 'error', body: payload as ApiErrorBody }
+    default:
+      return null
+  }
+}
+
+/**
+ * 生成行程，边跑边把阶段事件交给调用方。
+ *
+ * 用 fetch + 手工解析，不用 EventSource：EventSource 只支持 GET，而这个请求
+ * 会创建一份行程。另外 EventSource 失败会自动重连——那会把一次生成变成两次。
+ */
+export async function streamPlan(
+  payload: PlanIn,
+  onEvent: (event: PlanEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch('/api/plan/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(payload),
+      signal,
+    })
+  } catch (cause) {
+    if (signal?.aborted) return
+    onEvent({
+      type: 'error',
+      body: { message: cause instanceof Error ? cause.message : String(cause) },
+    })
+    return
+  }
+
+  if (!response.ok) {
+    const text = await response.text()
+    let body: ApiErrorBody = { message: text }
+    try {
+      body = JSON.parse(text) as ApiErrorBody
+    } catch {
+      /* 不是 JSON 就用原文 */
+    }
+    onEvent({ type: 'error', body })
+    return
+  }
+
+  if (!response.body) {
+    onEvent({ type: 'error', body: { message: '浏览器没有给出可读的响应流' } })
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const event = parseFrame(frame)
+        if (event) onEvent(event)
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from lushu.engine.planning import PlanOutcome, PlanStage, run_plan, stream_plan
+from lushu.engine.planning import PlanOutcome, PlanStage, compose_query, run_plan, stream_plan
 
 FAKE_PLAN: dict[str, Any] = {
     "destination": "南京",
@@ -196,3 +196,59 @@ async def test_pipeline_without_a_result_reports_failure(fake_run_stream) -> Non
     outcome = await run_plan("x")
     assert outcome.success is False
     assert outcome.missing_fields
+
+
+# ─── 把结构化条件折进 query ──────────────────────────────────
+#
+# 引擎的意图节点只从 query 文本里抽取日期与目的地，初始状态里的那几个字段
+# 会被它无条件覆盖。所以这一步不是可选的美化，而是唯一的传递通道。
+
+
+def test_compose_leaves_a_bare_query_alone() -> None:
+    assert compose_query("  想去南京  ") == "想去南京"
+
+
+def test_compose_appends_the_start_date() -> None:
+    composed = compose_query("去南京", start_date=date(2026, 10, 1))
+    assert composed.startswith("去南京")
+    assert "2026-10-01 出发" in composed
+
+
+def test_compose_appends_the_days() -> None:
+    assert "共 3 天" in compose_query("去南京", days=3)
+
+
+def test_compose_appends_the_destination() -> None:
+    assert "目的地是南京" in compose_query("出去玩", destination="南京")
+
+
+def test_compose_combines_everything() -> None:
+    composed = compose_query("去南京", start_date=date(2026, 10, 1), days=3, destination="南京")
+
+    assert composed.startswith("去南京（")
+    assert composed.endswith("）")
+    assert "目的地是南京" in composed
+    assert "2026-10-01 出发" in composed
+    assert "共 3 天" in composed
+
+
+def test_compose_joins_conditions_in_a_stable_order() -> None:
+    composed = compose_query("x", start_date=date(2026, 10, 1), days=3, destination="南京")
+    assert composed.index("目的地") < composed.index("出发") < composed.index("共")
+
+
+@pytest.mark.asyncio
+async def test_conditions_are_folded_into_the_query_sent_to_the_engine(fake_run_stream) -> None:
+    """这是真正起作用的那条通道，必须钉死。"""
+    captured = fake_run_stream(_typical_events())
+    await run_plan("去南京", start_date=date(2026, 10, 1), days=3)
+
+    assert "2026-10-01 出发" in captured["query"]
+    assert "共 3 天" in captured["query"]
+
+
+@pytest.mark.asyncio
+async def test_empty_conditions_do_not_touch_the_query(fake_run_stream) -> None:
+    captured = fake_run_stream(_typical_events())
+    await run_plan("去南京")
+    assert captured["query"] == "去南京"
