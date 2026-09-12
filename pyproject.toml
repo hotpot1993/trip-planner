@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lushu"
+version = "0.1.0"
+description = "路书 —— 本地优先的旅行攻略规划工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-sqlite>=3.0",
+    "langchain-openai",
+    "httpx",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff",
+]
+
+[project.scripts]
+ls = "lushu.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lushu*", "third_party*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# third_party 是逐字拷贝的上游代码，不适用本项目的规范也不该被改写
+exclude = ["third_party", "web", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
