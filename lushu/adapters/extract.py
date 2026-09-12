@@ -42,9 +42,16 @@ class ExtractionError(RuntimeError):
 #
 # 字段刻意从紧：subject_type / polarity / facet 都做成枚举，
 # 让模型只能在既定分类里选，避免它自由发挥出一堆同义标签。
+#
+# **类名不能以下划线开头**：结构化输出的 `method="function_calling"`
+# 会把类名当成工具名发给服务端，而工具名要匹配 `^[a-zA-Z0-9_-]{1,64}$`。
+# 叫 `ExtractionOut` 时会返回
+# `Unknown tool type: '\ExtractionOut'. Available tools: ExtractionOut`
+# ——服务端把下划线转义了，于是对不上。这类失败只在真实调用时出现，
+# 假客户端测不出来，所以名字这里特别加一句。
 
 
-class _ClaimOut(BaseModel):
+class ExtractedClaimOut(BaseModel):
     """一条候选结论。字段说明就是给模型看的指令。"""
 
     subject_name: str = Field(description="这条结论针对的景点、路线或城市，用原文里的叫法")
@@ -60,8 +67,8 @@ class _ClaimOut(BaseModel):
     quote: str = Field(description="支持这条结论的原文片段，必须是原文的连续子串，一字不改")
 
 
-class _ExtractionOut(BaseModel):
-    claims: list[_ClaimOut] = Field(description="抽出的候选结论，没有就给空列表")
+class ExtractionOut(BaseModel):
+    claims: list[ExtractedClaimOut] = Field(description="抽出的候选结论，没有就给空列表")
 
 
 SYSTEM_PROMPT = """你在为一份旅行攻略做资料整理。
@@ -217,7 +224,7 @@ def extract(
             # 一条坏缓存不该让整批提纯停住。
             pass
 
-    active_llm = llm if llm is not None else build_llm(_ExtractionOut, model=chosen)
+    active_llm = llm if llm is not None else build_llm(ExtractionOut, model=chosen)
 
     started = time.monotonic()
     try:
@@ -231,8 +238,8 @@ def extract(
         raise ExtractionError(f"提纯调用失败：{type(exc).__name__}: {exc}") from exc
     duration_ms = int((time.monotonic() - started) * 1000)
 
-    if not isinstance(result, _ExtractionOut):
-        result = _ExtractionOut.model_validate(result)
+    if not isinstance(result, ExtractionOut):
+        result = ExtractionOut.model_validate(result)
 
     payload = result.model_dump()
     raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)

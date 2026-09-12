@@ -16,7 +16,7 @@ from lushu.adapters.extract import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
     ExtractionError,
-    _ExtractionOut,
+    ExtractionOut,
     build_prompt,
     cache_key,
     extract,
@@ -39,7 +39,7 @@ class FakeLlm:
         self.calls.append(messages)
         if self.error is not None:
             raise self.error
-        return _ExtractionOut.model_validate(self.payload)
+        return ExtractionOut.model_validate(self.payload)
 
 
 def ok_payload(*claims: dict) -> dict:

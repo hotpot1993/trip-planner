@@ -293,6 +293,80 @@ class TestAlign:
         assert result.resolved is not None
         assert result.resolved.kind is PoiKind.DESTINATION
 
+    def test_same_name_neighbours_collapse_into_one_place(self) -> None:
+        """高德对同一个地方有多条记录时不该让人去挑。
+
+        实测：「洒金桥」返回三条同名记录——`交通地名;桥`、
+        `交通地名;立交桥`、`热点地名`，坐标在三百多米内。
+        它们指的是同一个路口与街区，让人在三条里选是无意义的工作。
+        """
+        candidates = [
+            poi("B001D1388K", "洒金桥", typecode="190307",
+                type_name="地名地址信息;交通地名;桥", adcode="610104",
+                lng_gcj02=108.932683, lat_gcj02=34.266372),
+            poi("B0FFKHHTAV", "洒金桥", typecode="190306",
+                type_name="地名地址信息;交通地名;立交桥", adcode="610104",
+                lng_gcj02=108.932766, lat_gcj02=34.269187),
+            poi("B0KUNLR9MF", "洒金桥", typecode="190700",
+                type_name="地名地址信息;热点地名;热点地名", adcode="610104",
+                lng_gcj02=108.932464, lat_gcj02=34.269399),
+        ]
+        result = align(
+            Mention(name="洒金桥", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.ALIGNED
+        assert result.resolved is not None
+        assert result.resolved.name == "洒金桥"
+        # 三条记录都算这一个地方的成员
+        assert "另有 2 条候选属于同一本体" in result.reason
+
+    def test_same_name_far_apart_stays_ambiguous(self) -> None:
+        """同名但相距很远的是两个地方，不能并。"""
+        candidates = [
+            poi("S1", "钟楼", typecode="110200", adcode="610104",
+                lng_gcj02=108.94, lat_gcj02=34.26),
+            poi("S2", "钟楼", typecode="110200", adcode="610118",
+                lng_gcj02=108.60, lat_gcj02=34.10),
+        ]
+        result = align(
+            Mention(name="钟楼", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.AMBIGUOUS
+
+    def test_same_name_different_kind_is_not_merged(self) -> None:
+        """同名但一个是景点、一个是地名，地位不同，不并。"""
+        candidates = [
+            poi("K1", "回民街", typecode="061001",
+                type_name="购物服务;特色商业街;步行街", adcode="610104",
+                lng_gcj02=108.94, lat_gcj02=34.26),
+            poi("K2", "回民街", typecode="190700",
+                type_name="地名地址信息;热点地名;热点地名", adcode="610104",
+                lng_gcj02=108.9401, lat_gcj02=34.2601),
+        ]
+        result = align(
+            Mention(name="回民街", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.AMBIGUOUS
+
+    def test_missing_coordinates_do_not_crash(self) -> None:
+        """没有坐标时不能判「同一个地方」，也不该崩。"""
+        candidates = [
+            poi("N1", "洒金桥", typecode="190307", adcode="610104"),
+            poi("N2", "洒金桥", typecode="190306", adcode="610104"),
+        ]
+        result = align(
+            Mention(name="洒金桥", city_name="西安", city_adcode="610100"),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.AMBIGUOUS
+
     def test_inspection_office_is_filtered_out_even_when_name_matches(self) -> None:
         """搜「故宫」时「故宫博物院检票处」排在很前，但它是生活服务场所。
 

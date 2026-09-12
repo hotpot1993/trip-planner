@@ -372,10 +372,13 @@ def _consolidate(
 ) -> list[_Entity]:
     """按本体合并候选，返回排序后的实体列表。
 
-    这一步同时解决两件事：
+    这一步解决三件事：
 
     1. **重复实体**：同一个本体的多个候选算一个，取名称最像的那个代表
-    2. **本体与子点之间的选择**：靠 `rank_score` 里的名称关系加成，
+    2. **同名近邻**：高德对同一个地方会有多条记录（实测「洒金桥」有
+       `交通地名;桥`、`交通地名;立交桥`、`热点地名` 三条，坐标相差不到
+       三百米），它们是同一个地方，不该让人在同名同类的三条里挑
+    3. **本体与子点之间的选择**：靠 `rank_score` 里的名称关系加成，
        本体（名称更短、更上位）自然排在子点前面
     """
     groups: dict[str, list[ScoredCandidate]] = {}
@@ -402,7 +405,70 @@ def _consolidate(
         )
 
     entities.sort(key=lambda entity: -entity.best.rank_score)
-    return entities
+    return _merge_same_name_neighbours(entities)
+
+
+# 两处同名同类的 POI 相距小于这个米数就当作同一个地方。
+# 依据是实测：「洒金桥」的三条记录坐标在 108.9325~108.9328 / 34.2664~34.2694
+# 之间，最远两点约 340 米，而它们指的是同一个路口与街区。
+SAME_PLACE_METRES = 400.0
+
+
+def _merge_same_name_neighbours(entities: list[_Entity]) -> list[_Entity]:
+    """把「同名、同类型、坐标相邻」的实体并成一个。
+
+    高德对同一个地方常有多条记录（桥与立交桥、热点地名与道路名）。
+    不并的话，「前两名得分相差不足 0.08 就交人工」这条规则会在同一个
+    地方上反复触发——实测「洒金桥」就是这样进的待人工。
+    """
+    kept: list[_Entity] = []
+    for entity in entities:
+        target = next(
+            (item for item in kept if _same_place(item.best.poi, entity.best.poi)),
+            None,
+        )
+        if target is None:
+            kept.append(entity)
+            continue
+
+        # 并进去：把成员接上，代表取名称分高的那个
+        merged_members = target.members + entity.members
+        best = target.best if target.best.rank_score >= entity.best.rank_score else entity.best
+        root = target.root if target.root is not None else entity.root
+        kept[kept.index(target)] = _Entity(
+            root_id=target.root_id,
+            best=best,
+            members=merged_members,
+            root=root,
+        )
+    kept.sort(key=lambda item: -item.best.rank_score)
+    return kept
+
+
+def _same_place(left: CandidatePoi, right: CandidatePoi) -> bool:
+    """两处 POI 是不是同一个地方：同名 + 同类 + 坐标相邻。"""
+    if left.poi_id == right.poi_id:
+        return False
+    if left.name.strip() != right.name.strip():
+        return False
+    if left.kind is not right.kind:
+        return False
+
+    if left.lng_gcj02 is None or left.lat_gcj02 is None:
+        return False
+    if right.lng_gcj02 is None or right.lat_gcj02 is None:
+        return False
+
+    from math import asin, cos, radians, sin, sqrt
+
+    # 半正矢。坐标是 GCJ-02，与 WGS-84 差几十米——判断「是不是同一个地方」
+    # 这个量级足够用，不需要做坐标转换（ADR-0003 只要求存储格式统一）。
+    lat1, lat2 = radians(left.lat_gcj02), radians(right.lat_gcj02)
+    delta_lat = lat2 - lat1
+    delta_lng = radians(right.lng_gcj02 - left.lng_gcj02)
+    haversine = sin(delta_lat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(delta_lng / 2) ** 2
+    metres = 2 * 6371000 * asin(sqrt(haversine))
+    return metres <= SAME_PLACE_METRES
 
 
 def align(

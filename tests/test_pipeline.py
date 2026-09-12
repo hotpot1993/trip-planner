@@ -106,9 +106,9 @@ class FakeLlm:
         self.payload = {"claims": list(claims)}
 
     def invoke(self, messages: list[dict]) -> Any:
-        from lushu.adapters.extract import _ExtractionOut
+        from lushu.adapters.extract import ExtractionOut
 
-        return _ExtractionOut.model_validate(self.payload)
+        return ExtractionOut.model_validate(self.payload)
 
 
 def llm_with(*claims: dict) -> FakeLlm:
