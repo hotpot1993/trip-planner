@@ -28,3 +28,9 @@ web/.vite/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 探测脚本的临时输出，随手生成随手删
+/probe_*.txt
+/collect.txt
+/pytest_out.txt
+/poi_dump.txt
