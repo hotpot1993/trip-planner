@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -347,11 +347,77 @@ _MIGRATION_4 = """
 ALTER TABLE intercity_transfer ADD COLUMN note TEXT;
 """
 
+# ─── 迁移 5：M3 数据链路的落点 ───────────────────────────────────
+#
+# 分三块，都是为了把「这条结论是怎么来的」留成可回查的数据，而不是靠日志。
+#
+# 一、poi 补 parent_poi_id。M3 靠它认层级：`parent` 为空的才是本体，
+#     结论一律挂本体（ADR-0009）。M1/M2 落库时没有这个字段，
+#     因为引擎的 poi_to_spot() 把原始 POI 丢掉了（docs/M3-PROBE.md 第四节）。
+#
+# 二、source_document 补三类东西：
+#       content_sha256  精确去重（body_sha256 留着不动，它已被索引引用）
+#       fetched_at      抓取时间，与导入时间分开——批量囤稿时两者会差很远
+#       group_score     归组时的重合度。实测 LCS 覆盖同篇 [0.051,0.852]、
+#                       异篇 [0.000,0.000]（ADR-0008），把它留下，
+#                       日后有人问「这两篇为什么算一个来源」才有据可查
+#
+# 三、加两张表：
+#       extraction_run  每次提纯运行。跑过哪篇、用哪个模型、抽出几条、
+#                       引文有几条回不到原文——「这条结论是怎么来的」的答案。
+#       llm_cache       同一篇素材用同一个提示词重复提纯时直接复用。
+#                       批量提纯要花钱，重跑是常事（改了一处解析、加了一个字段），
+#                       不缓存等于每次重跑都重新付费。
+#
+# 刻意**没有**为 claim 加「待确认」状态：`workbench_task` 已经能承载
+# 待办（用 ref_type='extraction' 区分自动任务与人工任务），再加一套状态
+# 会让「一条 claim 现在处于什么状态」有两个答案。
+#
+_MIGRATION_5 = """
+ALTER TABLE poi ADD COLUMN parent_poi_id TEXT;
+CREATE INDEX idx_poi_parent ON poi(parent_poi_id);
+
+ALTER TABLE source_document ADD COLUMN content_sha256 TEXT;
+ALTER TABLE source_document ADD COLUMN fetched_at TEXT;
+ALTER TABLE source_document ADD COLUMN group_score REAL;
+CREATE INDEX idx_sd_content_sha ON source_document(content_sha256);
+
+CREATE TABLE extraction_run (
+    id                  TEXT PRIMARY KEY,
+    source_document_id  TEXT NOT NULL REFERENCES source_document(id) ON DELETE CASCADE,
+    prompt_version      TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    candidate_count     INTEGER NOT NULL DEFAULT 0,   -- 模型吐出的条数
+    accepted_count      INTEGER NOT NULL DEFAULT 0,   -- 引文校验通过的条数
+    dropped_count       INTEGER NOT NULL DEFAULT 0,   -- 引文回不到原文而丢弃的条数
+    input_chars         INTEGER,
+    output_chars        INTEGER,
+    duration_ms         INTEGER,
+    group_id            TEXT REFERENCES source_group(id),
+    status              TEXT NOT NULL DEFAULT 'ok'
+                        CHECK(status IN ('ok', 'failed')),
+    error               TEXT,
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX idx_er_doc ON extraction_run(source_document_id);
+CREATE INDEX idx_er_created ON extraction_run(created_at);
+
+CREATE TABLE llm_cache (
+    -- 键是「提示词版本 + 模型 + 输入摘要」，换模型或改提示词都会自然失效
+    cache_key    TEXT PRIMARY KEY,
+    prompt_version TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
     3: _MIGRATION_3,
     4: _MIGRATION_4,
+    5: _MIGRATION_5,
 }
 
 

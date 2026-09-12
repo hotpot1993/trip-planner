@@ -35,7 +35,66 @@ EXPECTED_TABLES = {
     # 人工介入域
     "workbench_task",
     "gold_label",
+    # 运行与缓存（M3）
+    "extraction_run",
+    "llm_cache",
 }
+
+
+def test_migration_5_columns_exist(temp_db: Path) -> None:
+    """迁移 5 加的三处列都要在。
+
+    它们不是可有可无的补充：`parent_poi_id` 是认层级的前提（ADR-0009），
+    `content_sha256` 是精确去重的前提，`group_score` 是
+    「这两篇为什么算一个来源」的答案（ADR-0008）。
+    """
+    conn = connect(temp_db)
+    try:
+        poi_cols = {row["name"] for row in conn.execute("PRAGMA table_info(poi)")}
+        doc_cols = {row["name"] for row in conn.execute("PRAGMA table_info(source_document)")}
+    finally:
+        conn.close()
+
+    assert "parent_poi_id" in poi_cols
+    assert {"content_sha256", "fetched_at", "group_score"} <= doc_cols
+
+
+def test_extraction_run_counts_are_plain_integers(temp_db: Path) -> None:
+    """提纯运行的计数列用来回答「抽了几条、丢了几条、为什么丢」。"""
+    with transaction(temp_db) as conn:
+        conn.execute(
+            "INSERT INTO source_document (id, site, body_text, body_sha256, imported_at, import_kind) "
+            "VALUES ('d1', 'manual', '正文', 'sha-1', '2026-09-12', 'paste')"
+        )
+        conn.execute(
+            "INSERT INTO extraction_run (id, source_document_id, prompt_version, model, "
+            "candidate_count, accepted_count, dropped_count, created_at) "
+            "VALUES ('er1', 'd1', 'v1', 'deepseek-v4-flash', 14, 13, 1, '2026-09-12')"
+        )
+        row = conn.execute("SELECT * FROM extraction_run WHERE id = 'er1'").fetchone()
+
+    assert row["candidate_count"] == 14
+    assert row["accepted_count"] == 13
+    assert row["dropped_count"] == 1
+    assert row["status"] == "ok"
+
+
+def test_extraction_run_status_is_constrained(temp_db: Path) -> None:
+    with transaction(temp_db) as conn:
+        conn.execute(
+            "INSERT INTO source_document (id, site, body_text, body_sha256, imported_at, import_kind) "
+            "VALUES ('d1', 'manual', '正文', 'sha-1', '2026-09-12', 'paste')"
+        )
+
+    conn = connect(temp_db)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO extraction_run (id, source_document_id, prompt_version, model, "
+                "status, created_at) VALUES ('er1', 'd1', 'v1', 'm', '半途而废', '2026-09-12')"
+            )
+    finally:
+        conn.close()
 
 
 def test_initialize_is_idempotent(temp_db: Path) -> None:
