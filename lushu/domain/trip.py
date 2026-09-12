@@ -13,22 +13,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from enum import StrEnum
+
+from .transfer import TransferMode
 
 # 超过这个时长的城际转移，默认建议改落在到达城市的第一天。
 # 依据：早班长途车到站后，出发城市当天已无游玩价值；
 # 而傍晚出发则白天仍留在出发城市，归入出发城市最后一天更自然。
 LONG_TRANSFER_MINUTES = 240
-
-
-class TransferMode(StrEnum):
-    """城际转移的交通方式。"""
-
-    RAIL = "rail"
-    AIR = "air"
-    COACH = "coach"
-    DRIVE = "drive"
-    OTHER = "other"
 
 
 @dataclass(frozen=True)
