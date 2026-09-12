@@ -10,14 +10,17 @@
 
 from .amap import AmapError, CityMatch, lookup_city, resolve_city
 from .bootstrap import engine_info, prepare_engine, reset_engine
-from .planning import PlanOutcome, PlanStage, run_plan, stream_plan
+from .planning import PlanOutcome, PlanStage, compose_query, run_plan, stream_plan
+from .weather import fetch_forecast as fetch_amap_forecast
 
 __all__ = [
     "AmapError",
     "CityMatch",
     "PlanOutcome",
     "PlanStage",
+    "compose_query",
     "engine_info",
+    "fetch_amap_forecast",
     "lookup_city",
     "prepare_engine",
     "reset_engine",

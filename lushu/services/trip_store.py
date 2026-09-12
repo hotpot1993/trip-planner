@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -39,6 +40,16 @@ class UnresolvedCityError(RuntimeError):
     def __init__(self, city_names: tuple[str, ...]) -> None:
         self.city_names = city_names
         super().__init__("以下城市没能解析到行政区划代码：" + "、".join(city_names))
+
+
+@dataclass(frozen=True)
+class CityRef:
+    """城市的实体数据。坐标是 GCJ-02（ADR-0003）。"""
+
+    adcode: str
+    name: str
+    lat_gcj02: float | None = None
+    lng_gcj02: float | None = None
 
 
 @dataclass(frozen=True)
@@ -272,13 +283,86 @@ def _insert_plan(conn: sqlite3.Connection, trip_id: str, draft: PlannedTrip) -> 
                 )
 
 
-def _upsert_city(conn: sqlite3.Connection, name: str, adcode: str) -> None:
-    """城市是实体真源的一部分（ADR-0002）。已存在时不覆盖坐标，只更新时间戳。"""
+def _upsert_city(
+    conn: sqlite3.Connection,
+    name: str,
+    adcode: str,
+    *,
+    lat_gcj02: float | None = None,
+    lng_gcj02: float | None = None,
+) -> None:
+    """城市是实体真源的一部分（ADR-0002）。
+
+    坐标为 None 时**不覆盖**已有的值：一条行程里若没解析到坐标，不该把之前
+    解析好的坐标抹掉。天气面板与里程估价都依赖这两列。
+    """
     conn.execute(
-        "INSERT INTO city (adcode, name, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(adcode) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-        (adcode, name, _now()),
+        "INSERT INTO city (adcode, name, lat_gcj02, lng_gcj02, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(adcode) DO UPDATE SET "
+        "  name = excluded.name, "
+        "  lat_gcj02 = COALESCE(excluded.lat_gcj02, city.lat_gcj02), "
+        "  lng_gcj02 = COALESCE(excluded.lng_gcj02, city.lng_gcj02), "
+        "  updated_at = excluded.updated_at",
+        (adcode, name, lat_gcj02, lng_gcj02, _now()),
     )
+
+
+def upsert_cities(cities: Sequence[CityRef], *, conn: sqlite3.Connection | None = None) -> None:
+    """把解析到的城市写进实体表。
+
+    城市名是人给的，代码与坐标必须以高德为准（ADR-0002）。解析是唯一能拿到
+    坐标的时机，所以顺手记下来——天气与里程估价不该为了坐标再问一次高德。
+    """
+    if not cities:
+        return
+
+    owned = conn is None
+    active = conn or connect()
+    try:
+        with active:
+            for city in cities:
+                _upsert_city(
+                    active,
+                    city.name,
+                    city.adcode,
+                    lat_gcj02=city.lat_gcj02,
+                    lng_gcj02=city.lng_gcj02,
+                )
+    finally:
+        if owned:
+            active.close()
+
+
+def load_cities(
+    adcodes: Sequence[str], *, conn: sqlite3.Connection | None = None
+) -> dict[str, CityRef]:
+    """按行政区划代码取城市。返回 {adcode: CityRef}。"""
+    codes = [code for code in dict.fromkeys(adcodes) if code]
+    if not codes:
+        return {}
+
+    owned = conn is None
+    active = conn or connect()
+    try:
+        placeholders = ",".join("?" for _ in codes)
+        rows = active.execute(
+            f"SELECT adcode, name, lat_gcj02, lng_gcj02 FROM city WHERE adcode IN ({placeholders})",
+            codes,
+        ).fetchall()
+    finally:
+        if owned:
+            active.close()
+
+    return {
+        row["adcode"]: CityRef(
+            adcode=row["adcode"],
+            name=row["name"],
+            lat_gcj02=row["lat_gcj02"],
+            lng_gcj02=row["lng_gcj02"],
+        )
+        for row in rows
+    }
 
 
 def _upsert_poi(

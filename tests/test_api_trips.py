@@ -65,6 +65,21 @@ def test_created_trip_has_consecutive_days(api_client, stub_cities) -> None:
     assert body["end_date"] == "2026-10-03"
 
 
+def test_city_display_name_keeps_the_user_wording(api_client, monkeypatch, stub_cities) -> None:
+    """高德对市级行政区有自己的叫法（北京 → 北京城区）。显示名必须用用户说的那个，
+    否则天气面板上会出现「北京城区」这种没人这么说的词。"""
+    from lushu.engine.amap import CityMatch
+    from lushu.services import trip_service
+
+    stub_cities["北京"] = CityMatch(name="北京城区", adcode="110100", level="city")
+    monkeypatch.setattr(trip_service, "resolve_city", lambda name, **kw: stub_cities.get(name))
+
+    body = _create(api_client, cities=[{"name": "北京", "days": 2}]).json()
+
+    assert body["city_names"] == ["北京"]
+    assert body["name"] == "北京 2 天"
+
+
 def test_skeleton_days_start_empty(api_client, stub_cities) -> None:
     body = _create(api_client, cities=[{"name": "南京", "days": 2}]).json()
     assert all(d["items"] == [] for d in body["stays"][0]["days"])

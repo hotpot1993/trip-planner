@@ -44,9 +44,11 @@ LAYER_ALLOWS: dict[str, set[str]] = {
     "pure": set(),  # __init__.py 与 config.py：只依赖标准库与第三方基础库
     "domain": {"lushu.domain"},
     "store": set(),
+    # adapters 与 engine 都是「把外部数据翻译成领域对象」的层，所以都能引用 domain。
+    # 两者都不能引用 store（不该碰本项目的表）或 services/api（不能反向依赖）。
     "adapters": {"lushu.domain", "lushu.store"},
     "services": {"lushu.domain", "lushu.store", "lushu.adapters", "lushu.engine"},
-    "engine": set(),
+    "engine": {"lushu.domain"},
     "api": {"lushu.domain", "lushu.services", "lushu.store", "lushu.engine"},
 }
 

@@ -22,6 +22,7 @@ from lushu.domain.planned import PlannedDay, PlannedStay, PlannedTrip, StaySpec,
 from lushu.engine import PlanStage, resolve_city, run_plan
 from lushu.services.plan_converter import plan_to_trip
 from lushu.services.trip_store import (
+    CityRef,
     StoredTrip,
     delete_trip,
     list_trips,
@@ -29,6 +30,7 @@ from lushu.services.trip_store import (
     replace_plan,
     save_planned_trip,
     set_status,
+    upsert_cities,
 )
 
 __all__ = [
@@ -45,7 +47,7 @@ __all__ = [
     "plan_and_save",
     "replan_trip",
     "replace_plan",
-    "resolve_specs",
+    "resolve_and_record_cities",
     "set_status",
     "update_stays",
 ]
@@ -118,12 +120,18 @@ def _require_engine_config() -> None:
         raise ConfigMissingError(missing)
 
 
-async def resolve_specs(specs: Sequence[StaySpec]) -> tuple[StaySpec, ...]:
-    """把城市停留规格里的行政区划代码补齐。
+async def resolve_and_record_cities(specs: Sequence[StaySpec]) -> tuple[StaySpec, ...]:
+    """解析城市并记进实体表。
 
-    用户只给城市名，代码必须以高德为准。查不到就明确失败，不猜。
+    名字里带 record 是因为它有副作用：解析是唯一能拿到坐标的时机，而天气面板
+    与里程估价都要坐标。把副作用写在名字上，胜过藏在 `resolve_specs` 里。
+
+    **显示名以用户的输入为准。** 高德对市级行政区有自己的叫法——用户说「北京」，
+    它返回「北京城区」；拿它当显示名，天气面板上就会出现「北京城区」这种
+    没人这么说的词。身份是 adcode，名字只是给人看的。
     """
     resolved: list[StaySpec] = []
+    cities: list[CityRef] = []
     missing: list[str] = []
 
     for spec in specs:
@@ -134,17 +142,31 @@ async def resolve_specs(specs: Sequence[StaySpec]) -> tuple[StaySpec, ...]:
         if match is None:
             missing.append(spec.city_name)
             continue
+
+        display_name = spec.city_name.strip() or match.name
         resolved.append(
             StaySpec(
-                city_name=match.name or spec.city_name,
+                city_name=display_name,
                 stay_days=spec.stay_days,
                 city_adcode=match.adcode,
             )
         )
+        cities.append(_to_city_ref(match, display_name=display_name))
 
     if missing:
         raise CityNotFoundError(missing)
+    if cities:
+        await asyncio.to_thread(upsert_cities, cities)
     return tuple(resolved)
+
+
+def _to_city_ref(match, *, display_name: str) -> CityRef:
+    return CityRef(
+        adcode=match.adcode,
+        name=display_name or match.name,
+        lat_gcj02=match.lat_gcj02,
+        lng_gcj02=match.lng_gcj02,
+    )
 
 
 # ─── 手工骨架 ────────────────────────────────────────────────
@@ -158,7 +180,7 @@ async def create_skeleton(
     query: str = "",
 ) -> str:
     """按城市与天数铺出一份空的逐日行程，返回行程标识。"""
-    resolved = await resolve_specs(specs)
+    resolved = await resolve_and_record_cities(specs)
     stays = lay_out(start_date, resolved)
     trip_name = name or _default_name(resolved)
     return save_planned_trip(
@@ -197,7 +219,7 @@ async def update_stays(
     if current is None:
         raise LookupError(f"行程不存在：{trip_id}")
 
-    resolved = await resolve_specs(specs)
+    resolved = await resolve_and_record_cities(specs)
     anchor = start_date or current.plan.start_date
     laid_out = lay_out(anchor, resolved)
     stays = _preserve_items(current.plan, laid_out)
@@ -326,6 +348,9 @@ async def _convert_outcome(plan: dict, request: PlanRequest) -> PlannedTrip:
     match = await asyncio.to_thread(resolve_city, destination)
     if match is None:
         raise CityNotFoundError([destination])
+
+    # 顺手记下城市坐标：天气面板与里程估价都要用，而这是唯一拿得到它们的时机
+    await asyncio.to_thread(upsert_cities, [_to_city_ref(match, display_name=destination)])
 
     return plan_to_trip(
         plan,
