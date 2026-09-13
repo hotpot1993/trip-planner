@@ -5,9 +5,10 @@
 目前定的路子是 **GitHub Actions 构建并推送**，NAS 只负责拉取与运行。
 命令除非另说，都在仓库根目录执行。
 
-> **写这份文档的机器上没有 Docker**（也没有 WSL），所以镜像本身没有在本地
-> 构建过。构建前能验证的部分都验证了，验证了什么、没验证什么，列在文末
-> 「构建前验证过什么」一节 —— 请连没验证的一起看。
+> **写这份文档的机器上没有 Docker**（也没有 WSL），所以镜像是 GitHub Actions
+> 构建的，不是本机构建的。构建前能查的都查了，构建之后 CI 又把镜像拉下来
+> 真跑了一遍；验过什么、没验什么，列在文末「验证过什么」一节 ——
+> 请连没验的一起看。
 
 ---
 
@@ -92,6 +93,19 @@ RUN python -c "...从 pyproject.toml 抽依赖写 /tmp/requirements.txt..." \
 metadata-action 的 `is_default_branch`。原因：默认分支要是没设成 master，
 `latest` 会**静默地**不打，而 compose 拉的正是 `latest` —— 那种失败到了 NAS 上
 只表现为「拉不到镜像」，看不出原因。
+
+### 推完之后还会自己跑一遍
+
+workflow 里还有一个 `smoke` job：把刚推上去的那个 tag 拉下来，不挂卷、不给任何
+Key（就是 NAS 上第一次起来的样子），然后核对
+
+- `/api/health` 的 `status` / `database.exists` / `engine.available`
+- 根路径回的是前端（有 `id="root"` 与 `/assets/`），不是那句「前端尚未构建」
+- `/app/data` 下库与车站名表都在（后者靠 entrypoint 补）
+- 容器自己的健康检查最后是不是 `healthy`
+
+**注意顺序是先 push 再 smoke**：这一步要是红了，刚发布出去的那个 tag 就是坏的 ——
+修好再推一次会覆盖它。构建成功不等于跑得起来，这一步就是为了那句区别。
 
 产出的标签有三个：
 
@@ -285,7 +299,7 @@ docker load -i trip-planner.tar
 
 ---
 
-## 八、构建前验证过什么
+## 八、验证过什么
 
 这台机器上没有 Docker，所以下面这些是**构建之外**能查的都查了：
 
@@ -302,9 +316,26 @@ docker load -i trip-planner.tar
 | 上线前会不会把密钥带出去 | 拿 `.env.local` 里四个真 Key 去搜整个 git 历史（71 次提交，`git log -S`） | 四个都**未命中**；历史里出现过的敏感路径只有 `.env.example` |
 | 车站缓存格式与新鲜度 | 读 `lushu/seed/rail_stations.json` | `fetched_at: 2026-09-12`，3384 站；30 天内有效，之后会自动重拉 |
 
-**没验证的**：镜像能不能构建出来、容器能不能起来、健康检查过不过、
-飞牛上拉取顺不顺、挂载之后写不写得进去。第一次构建如果出错，
-把 Actions 的完整日志贴出来即可。
+**还没验证的**：飞牛上拉不拉得动（国内网络）、挂载 NAS 目录之后写不写得进去、
+那台机器的架构与端口有没有冲突。这三件只有到了那台机器上才知道。
+
+### 构建之后，CI 把镜像真跑了一遍
+
+上面那些是构建前查的。下面这些是同一份 Dockerfile 在 GitHub 的 Linux runner
+上**真跑出来的结果**，不是推断 —— 见 workflow 里的 `smoke` job：
+
+| 查了什么 | 结果 |
+|---|---|
+| 镜像构建 | 通过。两段都真的跑了：Node 段装依赖并 `pnpm build`，Python 段装依赖 |
+| 推送到 Docker Hub | 通过。`latest` 与 `sha-xxxxxxxx` 都在，linux/amd64，75.5 MB，12 层 |
+| 镜像里有没有密钥 | 没有。`Env` 里只有 PATH / PYTHON* / LUSHU_* / TZ；构建历史里没有 `.env.local`、`lushu.db` |
+| 容器起不起得来 | 起得来，PID 1 就是服务本身（entrypoint 的 `exec` 生效了） |
+| `/api/health` | `status: ok`、`database.exists: true`、`engine.available: true`（上游 `ec911f7`） |
+| 库建在哪 | `/app/data/lushu.db` —— 说明 `ROOT_DIR` 推对了，没有装成 site-packages 里的包 |
+| 前端挂上了没有 | 挂上了。根路径 200，回的是带 `id="root"` 与 `/assets/` 的页面 |
+| entrypoint 补料 | 生效。日志里有「数据目录里没有 rail_stations.json，已从镜像补上」，随后该文件在 `/app/data` 下 |
+| 容器自己的健康检查 | `starting` → `healthy` |
+| 缺 Key 时的行为 | 警告「缺少配置 AMAP_API_KEY、DEEPSEEK_API_KEY」，服务照常提供 |
 
 **记下这批依赖的版本**：构建当天 `pip` 解析出的是
 `fastapi 0.141.1 / uvicorn 0.52.4 / pydantic 2.13.5 / langgraph 1.2.11 /
@@ -316,11 +347,11 @@ python-dotenv 1.2.3`，与开发机虚拟环境一致。`pyproject.toml` 写的�
 
 ## 九、暂时没做的两件事
 
-**1. CI 里没跑测试。** 工作流只构建镜像，没有先跑那 1474 条测试。原因很实在：
-这套测试只在 Windows 上跑过，没在 Linux 上验证过，先拿它挡在构建前面，
-有可能第一次就红在某个与环境有关的用例上，反而把镜像卡住。
-等镜像这条路跑通、确认测试在 Linux 上也干净，再加一个 `test` job 让
-`image` job 依赖它。
+**1. CI 里没跑那 1476 条单元测试。** 工作流只做了三件事：构建、推送、把镜像
+拉起来冒烟。冒烟测的是「跑不跑得起来」，测不到业务逻辑。原因是这套测试只在
+Windows 上跑过，没在 Linux 上验证过，先拿它挡在构建前面，有可能第一次就红在
+某个与环境有关的用例上，反而把镜像卡住。等确认测试在 Linux 上也干净，再加一个
+`test` job 让 `image` 依赖它。
 
 **2. 没建 GitHub 仓库自己的 LICENSE。** 上游那份代码怎么处理还没定
 （见第三节的说明），定了再补比较合适。
