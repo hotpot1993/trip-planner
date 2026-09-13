@@ -239,6 +239,49 @@ class TestSeedRules:
         assert report.written == 1
         assert any(item.code == "no_channel" for item in report.errors)
 
+    def test_reseeding_keeps_the_review_when_nothing_changed(
+        self, db: Path, tmp_path: Path
+    ) -> None:
+        """加几条新规则不该让已复核的那些凭空失效。
+
+        规则被打回草案意味着用户那边的提醒消失了，而他会以为
+        「这个景点不用预约」——正是最怕的失败模式。
+        """
+        _city(db)
+        path = _seed_file(tmp_path, _entry())
+        with connect(db) as conn:
+            bs.seed_rules(path=path, conn=conn, search=search_returning(gugong()), fetch=_fetch())
+        with transaction(db) as conn:
+            bs.review_rule(conn=conn, poi_id=gugong().poi_id, reviewed_at=TODAY)
+
+        with connect(db) as conn:
+            report = bs.seed_rules(
+                path=path, conn=conn, search=search_returning(gugong()), fetch=_fetch()
+            )
+
+        assert report.kept_reviewed == 1
+        rule = bs.get_rule(gugong().poi_id, conn=connect(db))
+        assert rule is not None and rule.status is RuleStatus.REVIEWED
+
+    def test_changed_content_goes_back_to_draft(self, db: Path, tmp_path: Path) -> None:
+        """内容真变了（放票时刻变了）就该重新走复核——那时本来就该重核。"""
+        _city(db)
+        path = _seed_file(tmp_path, _entry(advance_days=7))
+        with connect(db) as conn:
+            bs.seed_rules(path=path, conn=conn, search=search_returning(gugong()), fetch=_fetch())
+        with transaction(db) as conn:
+            bs.review_rule(conn=conn, poi_id=gugong().poi_id, reviewed_at=TODAY)
+
+        changed = _seed_file(tmp_path, _entry(advance_days=5))
+        with connect(db) as conn:
+            report = bs.seed_rules(
+                path=changed, conn=conn, search=search_returning(gugong()), fetch=_fetch()
+            )
+
+        assert report.kept_reviewed == 0
+        rule = bs.get_rule(gugong().poi_id, conn=connect(db))
+        assert rule is not None and rule.status is RuleStatus.DRAFT
+
 
 class TestReviewGate:
     def _seeded(self, db: Path, tmp_path: Path, **overrides: object) -> str:

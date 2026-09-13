@@ -434,6 +434,9 @@ def _cmd_booking_seed(args: argparse.Namespace) -> int:
     report = bs.seed_rules(entries=entries)
     print()
     print(f"对上实体并写入 {report.written} 条（共 {report.total} 条）")
+    if report.kept_reviewed:
+        print(f"  其中 {report.kept_reviewed} 条内容未变，复核状态保住了——"
+              f"加新规则不会让已复核的那些失效")
     if report.failed:
         print(f"没写进去 {len(report.failed)} 条：")
         for name, why in report.failed:

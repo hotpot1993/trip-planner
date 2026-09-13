@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -231,6 +231,8 @@ class SeedReport:
     total: int = 0
     written: int = 0
     aligned: int = 0
+    # 内容没变、因此保住了复核状态的条数。这关系到用户那边提醒会不会消失
+    kept_reviewed: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)  # (景点名, 原因)
     findings: list[Finding] = field(default_factory=list)
 
@@ -302,6 +304,24 @@ def ensure_city(*, name: str, lookup, conn: sqlite3.Connection) -> str | None:
     return match.adcode
 
 
+def _same_material(left: BookingRuleModel, right: BookingRuleModel) -> bool:
+    """两条规则的**实质内容**是否相同。
+
+    复核状态不在比较之列——那不叫内容，那是签字。
+    """
+    return (
+        left.booking_required == right.booking_required
+        and left.advance_days == right.advance_days
+        and left.release_time == right.release_time
+        and left.requires_real_name == right.requires_real_name
+        and left.id_required_note == right.id_required_note
+        and left.closed_days == right.closed_days
+        and left.evidence_url == right.evidence_url
+        and [(c.name, c.kind, c.url) for c in left.channels]
+        == [(c.name, c.kind, c.url) for c in right.channels]
+    )
+
+
 def seed_rules(
     *,
     entries: list[SeedEntry] | None = None,
@@ -317,6 +337,11 @@ def seed_rules(
 
     写进去的规则一律是**草案状态**：入库不等于复核。种子文件里的字段只是
     「某人查到的材料」，签字画押是 `review_rule` 那一步的事。
+
+    **但内容没变的条目不重新打回草案。** 复核过的规则若被一次无关的
+    `seed` 悄悄打回草案，用户那边的提醒就凭空消失了——而他会以为
+    「这个景点不用预约」。加五条新规则不该让另外十七条一起失效。
+    内容真的改了（放票时刻变了、换了来源）才重新走复核，那时本来就该重核。
     """
     from lushu.adapters.poi import fetch_poi, search_pois
     from lushu.engine import resolve_city as engine_resolve_city
@@ -361,7 +386,19 @@ def seed_rules(
                 continue
             report.aligned += 1
             ks.save_candidate_poi(conn=active, poi=poi, city_adcode=city_adcode, now=_now())
-            write_rule(conn=active, rule=entry.as_rule(poi.poi_id), now=_now())
+
+            incoming = entry.as_rule(poi.poi_id)
+            existing = get_rule(poi.poi_id, conn=active)
+            if (
+                existing is not None
+                and existing.status is RuleStatus.REVIEWED
+                and _same_material(existing, incoming)
+            ):
+                # 材料照旧，签字照旧。只把备注更新成种子里的最新版本。
+                report.kept_reviewed += 1
+                incoming = replace(existing, reviewer_note=entry.note)
+
+            write_rule(conn=active, rule=incoming, now=_now())
             report.written += 1
         active.commit()
     finally:
