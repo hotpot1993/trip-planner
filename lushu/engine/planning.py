@@ -73,6 +73,7 @@ async def stream_plan(
     destination: str | None = None,
     max_review_rounds: int | None = None,
     spot_source=None,
+    pool_only_from: int | None = None,
 ) -> AsyncIterator[PlanStage | PlanOutcome]:
     """运行规划流水线，逐个产出阶段事件，最后产出一个 PlanOutcome。
 
@@ -81,6 +82,8 @@ async def stream_plan(
 
     `spot_source` 是候选池的提供者（`engine.pool_search.SpotProvider`）：
     给了它，景点搜索就是「候选池优先、高德补全」；不给就是纯高德搜索。
+    `pool_only_from` 是封闭世界的门槛（池子够这么多就只用池子），
+    由调用方从候选池那边传进来——那个数说的是「这座城市算不算有攻略数据」。
     """
     # 每次显式设定，不在两次规划之间残留状态
     from lushu.engine import pool_search
@@ -88,7 +91,10 @@ async def stream_plan(
     # 延迟导入：必须先加载 config，再触碰引擎
     from third_party.floattrip.planning.graph import run_stream
 
-    pool_search.install(spot_source)
+    pool_search.install(
+        spot_source,
+        pool_only_from=pool_only_from if pool_only_from is not None else 1,
+    )
 
     overrides: dict[str, Any] = {}
     if start_date is not None:

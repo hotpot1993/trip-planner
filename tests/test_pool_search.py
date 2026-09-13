@@ -239,98 +239,6 @@ class TestRatingFill:
         assert found[0].rating is None
 
 
-class TestTheRatingGate:
-    """池子条目**不受**评分门禁管；高德补的那部分照旧受管。
-
-    引擎原先那道 `filter_by_rating` 的意图是滤掉高德搜出来的噪声（评分缺失的
-    往往是个广场、停车场、上车点）。但池子里的地方不是「高德搜出来的」——
-    它们是网友真的写过的地方，评分缺失只是高德没给（实测**夫子庙就没有**）。
-    拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
-
-    代价是那个节点的几行逻辑在我们这边留了一份副本：所以这里既钉「池子豁免」，
-    也钉「高德那部分照旧被滤」——只钉一半，副本就可能在另一半点上悄悄走偏。
-    """
-
-    def _run(self, *, pool_names: set[str], spots: list[dict], min_rating: float = 4.0):
-        """把替换后的节点跑一遍，喂进去一份假的「高德搜索结果」。"""
-        return _PoolNode(
-            pool=[_pool_poi(name) for name in pool_names],
-            amap=spots,
-            min_rating=min_rating,
-        ).run()
-
-    def test_a_pool_entry_without_a_rating_survives(self) -> None:
-        """夫子庙：高德对它根本没有评分，但网友写过，所以它要活下来。"""
-        result = self._run(
-            pool_names={"夫子庙"},
-            spots=[
-                {"name": "夫子庙", "rating": None},
-                {"name": "中山陵景区", "rating": 4.9},
-                {"name": "某个广场", "rating": 3.5},
-            ],
-        )
-
-        assert [spot["name"] for spot in result["pois"]] == ["夫子庙", "中山陵景区"]
-
-    def test_amap_spots_are_still_filtered(self) -> None:
-        """高德那部分照旧受管——不然这道门禁就等于拆了。"""
-        result = self._run(
-            pool_names=set(),
-            spots=[
-                {"name": "中山陵景区", "rating": 4.9},
-                {"name": "某个广场", "rating": 3.5},
-                {"name": "没评分的广场", "rating": None},
-            ],
-        )
-
-        assert [spot["name"] for spot in result["pois"]] == ["中山陵景区"]
-
-    def test_pool_entries_come_first(self) -> None:
-        result = self._run(
-            pool_names={"老门东"},
-            spots=[
-                {"name": "中山陵景区", "rating": 4.9},
-                {"name": "老门东", "rating": 4.8},
-            ],
-        )
-
-        assert [spot["name"] for spot in result["pois"]] == ["老门东", "中山陵景区"]
-
-    def test_a_place_is_not_listed_twice(self) -> None:
-        """池子里的地方大多也搜得到：不能因为来源不同就出现两遍。"""
-        result = self._run(
-            pool_names={"夫子庙"},
-            spots=[{"name": "夫子庙", "rating": 4.8}],
-        )
-
-        assert [spot["name"] for spot in result["pois"]] == ["夫子庙"]
-
-    def test_the_history_note_says_what_happened(self) -> None:
-        """阶段日志里要能看出「池子几个、高德几个、滤掉几个」。"""
-        result = self._run(
-            pool_names={"夫子庙"},
-            spots=[
-                {"name": "夫子庙", "rating": None},
-                {"name": "某个广场", "rating": 3.5},
-            ],
-        )
-
-        note = result["history"][-1]
-        assert "候选池 1 个" in note
-        assert "不受评分门禁管" in note
-        assert "rating≥4.0 保留 0" in note
-
-
-class _FakeState:
-    """引擎状态的替身：节点只读这四个字段。"""
-
-    def __init__(self, **fields: object) -> None:
-        self.destination = fields.get("destination")
-        self.max_spots = fields.get("max_spots", 30)
-        self.min_rating = fields.get("min_rating", 4.0)
-        self.history = fields.get("history", [])
-
-
 class TestToSpot:
     def _poi(self, **overrides: object) -> CandidatePoi:
         base: dict[str, object] = {
@@ -397,10 +305,20 @@ class _FakeState:
 class _PoolNode:
     """跑一遍替换后的节点，喂进去一个假的「高德搜索」结果。"""
 
-    def __init__(self, *, pool: list[CandidatePoi], amap: list[dict], min_rating: float = 4.0):
+    def __init__(
+        self,
+        *,
+        pool: list[CandidatePoi],
+        amap: list[dict],
+        min_rating: float = 4.0,
+        pool_only_from: int = 99,
+    ):
         self.pool = pool
         self.amap = amap
         self.min_rating = min_rating
+        # 默认给一个够不着的门槛：这一组测的是「池子在前 + 池子豁免门禁」，
+        # 封闭世界那条路有它自己的用例（传小一点的数）。
+        self.pool_only_from = pool_only_from
         self.asked: list[str] = []
 
     def run(self) -> dict:
@@ -413,7 +331,9 @@ class _PoolNode:
         before = pool_search._state.get("original")
         pool_search._state["original"] = amap_search
         try:
-            node = pool_search._pool_exempt_node(lambda _city: list(self.pool))
+            node = pool_search._pool_exempt_node(
+                lambda _city: list(self.pool), pool_only_from=self.pool_only_from
+            )
             state = _FakeState(
                 destination="南京", max_spots=30, min_rating=self.min_rating, history=[]
             )
@@ -515,6 +435,66 @@ class TestTheSearchNode:
         assert "候选池 1 个" in note
         assert "不受评分门禁管" in note
         assert "滤掉 1" in note
+
+
+class TestTheClosedWorld:
+    """池子够用时就**只用池子**（设计 5.1：「排程不得引入候选池之外的景点」）。
+
+    两句要一起读：高德「补全」是在知识库还没覆盖这座城市的时候（同节原文：
+    「知识库尚未覆盖的城市仍可直接搜高德」）。池子够用还把高德那一片塞进去，
+    后果实测过——LLM 从里面挑了「不老村」「水墨大埝旅游区」，两个都在四十
+    公里外的郊区，而池子里明明有五个网友写过的地方。
+    """
+
+    def test_a_big_enough_pool_does_not_even_ask_amap(self) -> None:
+        node = _PoolNode(
+            pool=[_pool_poi(name) for name in ("中山陵景区", "南京博物院", "夫子庙")],
+            amap=[{"name": "不老村", "rating": 4.7}],
+            pool_only_from=3,
+        )
+
+        result = node.run()
+
+        assert node.asked == [], "池子够用时不该再打高德——打就会把池子外的塞进清单"
+        assert [spot["name"] for spot in result["pois"]] == [
+            "中山陵景区",
+            "南京博物院",
+            "夫子庙",
+        ]
+
+    def test_a_thin_pool_falls_back_to_amap(self) -> None:
+        """池子不够时照旧补全：城市只有一两条时封闭世界会把行程排空。"""
+        node = _PoolNode(
+            pool=[_pool_poi("中山陵景区")],
+            amap=[{"name": "某个广场", "rating": 4.5}],
+            pool_only_from=3,
+        )
+
+        result = node.run()
+
+        assert node.asked == ["南京"]
+        assert [spot["name"] for spot in result["pois"]] == ["中山陵景区", "某个广场"]
+
+    def test_an_empty_pool_is_the_old_behaviour(self) -> None:
+        """知识库没覆盖的城市：与从前完全一样，纯高德搜索。"""
+        node = _PoolNode(pool=[], amap=[{"name": "某个景点", "rating": 4.6}], pool_only_from=3)
+
+        result = node.run()
+
+        assert node.asked == ["南京"]
+        assert [spot["name"] for spot in result["pois"]] == ["某个景点"]
+
+    def test_the_note_says_the_world_was_closed(self) -> None:
+        """阶段日志要能看出「这次为什么没有高德那一堆」。"""
+        result = _PoolNode(
+            pool=[_pool_poi(name) for name in ("甲", "乙", "丙")],
+            amap=[],
+            pool_only_from=3,
+        ).run()
+
+        note = result["history"][-1]
+        assert "封闭世界门槛" in note
+        assert "不引入池子之外的景点" in note
 
 
 class TestInstall:

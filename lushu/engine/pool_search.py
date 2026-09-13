@@ -81,12 +81,18 @@ def to_spot(poi: CandidatePoi) -> dict[str, Any] | None:
     }
 
 
-def install(provider: SpotProvider | None) -> None:
+def install(provider: SpotProvider | None, *, pool_only_from: int = 1) -> None:
     """装上（或卸下）候选池优先的景点搜索。
 
     每次规划都调一次，`provider=None` 表示恢复原样——**状态由调用方每次显式
     设定**，不在两次规划之间残留。否则「上一次带池子、这一次不带」这种情形
     会拿到上一次的行为，而它没有任何地方看得出来。
+
+    `pool_only_from` 是**封闭世界的门槛**：池子里有这么多地方，就只用池子。
+    它由调用方传进来（`services/candidate_pool.THIN_COVERAGE`），因为这个数
+    说的是「这座城市算不算有攻略数据」——那是候选池那边的判断，
+    不该在引擎里再写一份。默认 1 的意思是「只要有池子就用池子」；
+    卸下时（`provider=None`）这个参数不参与。
 
     换的只有**一个函数**：那个节点。它自己调池子、自己调高德、自己决定
     谁受评分门禁管——两件事都在一处，就不会出现「搜索换了、门禁没换」
@@ -100,7 +106,9 @@ def install(provider: SpotProvider | None) -> None:
         _state["original_graph_node"] = graph.attraction_search_node
 
     node = (
-        _pool_exempt_node(provider) if provider is not None else _state["original_node"]
+        _pool_exempt_node(provider, pool_only_from=pool_only_from)
+        if provider is not None
+        else _state["original_node"]
     )
     nodes.attraction_search_node = node
     # `graph.py` 在模块级 `from ...nodes import attraction_search_node`，
@@ -108,13 +116,18 @@ def install(provider: SpotProvider | None) -> None:
     graph.attraction_search_node = node
 
 
-# 引擎那个节点做的事（抓清单 → 滤评分 → 记日志），改了两处：
+# 引擎那个节点做的事（抓清单 → 滤评分 → 记日志），改了三处：
 #
 # 1. **清单里池子在前**。设计 5.1：「候选池以攻略知识库为主、高德搜索补全」。
 # 2. **池子条目不受评分门禁管**。那道门禁的意图是滤掉高德搜出来的噪声
 #    （评分缺失的往往是个广场、停车场、上车点），而池子里的地方不是
 #    「高德搜出来的」——它们是网友真的写过的地方，评分缺失只是高德没给
 #    （实测夫子庙就没有）。拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
+# 3. **池子够用时就只用池子**。设计 5.1 的另一句：「排程不得引入候选池之外的
+#    景点」。两句要一起读：高德「补全」是在知识库还没覆盖这座城市的时候
+#    （同节原文：「知识库尚未覆盖的城市仍可直接搜高德」）。池子够用还把高德
+#    那一片塞进去，后果实测过——LLM 从里面挑了「不老村」「水墨大埝旅游区」，
+#    两个都在四十公里外的郊区。
 #
 # 为什么连节点一起换、而不是只换搜索函数：门禁在节点里，而 **`graph.py` 对
 # 节点另有一份模块级绑定**。只换搜索函数的话，池子条目进得了清单、过不了门禁
@@ -123,8 +136,8 @@ def install(provider: SpotProvider | None) -> None:
 #
 # 代价是这个节点的几行逻辑在我们这边有一份副本。上游固定在 ADR-0005 记的
 # 那个提交上，不会自主变化；真变化了，`tests/test_pool_search.py` 会红着提醒。
-def _pool_exempt_node(provider: SpotProvider):
-    """与引擎那个节点同一套逻辑，池子在前、且不受评分门禁管。"""
+def _pool_exempt_node(provider: SpotProvider, *, pool_only_from: int):
+    """与引擎那个节点同一套逻辑：池子在前、不受评分门禁管、够用就封闭世界。"""
 
     async def attraction_search_node(state):
         from third_party.floattrip.planning.helpers import amap_key, filter_by_rating
@@ -145,6 +158,14 @@ def _pool_exempt_node(provider: SpotProvider):
             seen.add(name)
             from_pool.append(spot)
 
+        # 池子够用：**就到这里**。高德那一片不进清单，LLM 也就挑不到池子之外的地方。
+        if len(from_pool) >= pool_only_from:
+            note = (
+                f"景点搜索：候选池 {len(from_pool)} 个，已达封闭世界门槛"
+                f"（{pool_only_from} 个），不引入池子之外的景点"
+            )
+            return {"pois": from_pool, "history": state.history + [note]}
+
         found = await _state["original"](city, amap_key(), max_spots=state.max_spots)
         # 池子里的地方大多也搜得到：不同来源的同名条目只留池子那一份
         fresh = [spot for spot in found if (spot.get("name") or "") not in seen]
@@ -155,6 +176,7 @@ def _pool_exempt_node(provider: SpotProvider):
             f"景点搜索：候选池 {len(from_pool)} 个（不受评分门禁管）"
             f" + 高德 {len(fresh)} 个（rating≥{state.min_rating} 保留 {len(kept)}，"
             f"滤掉 {len(dropped)}）= {len(spots)} 个"
+            f"——池子不足 {pool_only_from} 个，按设计用高德补全"
         )
         return {"pois": spots, "history": state.history + [note]}
 

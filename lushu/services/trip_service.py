@@ -315,6 +315,9 @@ async def plan_and_save(
         # 候选池优先、高德补全（设计 5.1）。池子没覆盖的城市会返回空，
         # 引擎于是走纯高德搜索——与从前完全一样。
         spot_source=candidate_pool.pool_pois,
+        # 池子够这么多就只用池子（设计 5.1 的封闭世界约束）。
+        # 这个数说的是「这座城市算不算有攻略数据」，所以从候选池那边取。
+        pool_only_from=candidate_pool.THIN_COVERAGE,
     )
     if not outcome.success or not outcome.plan:
         raise MissingInputError(outcome.missing_fields or ["出行需求"])
@@ -343,6 +346,7 @@ async def replan_trip(
         days=request.days,
         # 候选池优先、高德补全（设计 5.1）
         spot_source=candidate_pool.pool_pois,
+        pool_only_from=candidate_pool.THIN_COVERAGE,
     )
     if not outcome.success or not outcome.plan:
         raise MissingInputError(outcome.missing_fields or ["出行需求"])
