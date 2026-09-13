@@ -101,6 +101,28 @@ export function CityCandidates({ adcode, name }: { adcode: string; name?: string
   )
 }
 
+/**
+ * 预约那一行的文案。
+ *
+ * 三种状态必须写得出来，而且不能混：
+ *
+ * - 要预约、有确切口径 → 「需预约，提前 7 天 20:00」
+ * - 要预约、**官方没公布口径** → 「需预约，放票口径以官方为准」。
+ *   写成「无预约信息」等于把「必须预约」说成了「不用管」——实测踩过，
+ *   兵马俑那条规则就是这样被显示成没有信息的。
+ * - 不需要预约 → 「不需要预约」（这是已复核规则的结论，不是「不知道」）
+ *
+ * 「没有已复核的规则」的那种情况走不到这里——调用方据此不渲染这一行。
+ */
+function bookingLabel(item: CandidateOut): string {
+  if (!item.booking_required) return '不需要预约'
+  const parts: string[] = []
+  if (item.booking_days !== null) parts.push(`提前 ${item.booking_days} 天`)
+  if (item.booking_time) parts.push(item.booking_time)
+  if (!parts.length) return '需预约，放票口径以官方为准'
+  return `需预约，${parts.join(' ')}`
+}
+
 function CandidateCard({ item }: { item: CandidateOut }) {
   return (
     <li className="flex flex-col rounded border border-rule bg-paper-card p-5">
@@ -140,13 +162,11 @@ function CandidateCard({ item }: { item: CandidateOut }) {
             </dd>
           </div>
         ) : null}
-        {item.booking_days !== null || item.booking_time ? (
+        {item.booking_required !== null ? (
           <div className="flex gap-1">
             <dt className="sr-only">预约</dt>
-            <dd className="text-azurite">
-              需预约
-              {item.booking_days !== null ? `，提前 ${item.booking_days} 天` : ''}
-              {item.booking_time ? ` ${item.booking_time}` : ''}
+            <dd className={item.booking_required ? 'text-azurite' : 'text-ink-3'}>
+              {bookingLabel(item)}
             </dd>
           </div>
         ) : null}

@@ -48,6 +48,9 @@ class CandidateOut(BaseModel):
     claim_count: int
     high_confidence_count: int
     recommended: bool
+    # `None` 是「没有已复核的规则」，不是「不需要预约」。
+    # `True` 而 booking_days 为 None 是「要预约，但官方没公布放票口径」。
+    booking_required: bool | None
     booking_days: int | None
     booking_time: str | None
 
@@ -116,6 +119,7 @@ def city_candidates(
                 claim_count=item.claim_count,
                 high_confidence_count=item.high_confidence_count,
                 recommended=item.recommended,
+                booking_required=item.booking_required,
                 booking_days=item.booking_days,
                 booking_time=item.booking_time,
             )

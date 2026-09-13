@@ -400,6 +400,12 @@ export interface CandidateOut {
   claim_count: number
   high_confidence_count: number
   recommended: boolean
+  /**
+   * `null` 是「没有已复核的规则」，**不是**「不需要预约」。
+   * `true` 而 booking_days 为 null 是「要预约，但官方没公布放票口径」。
+   * 把这两种情况都说成「无预约信息」，等于把「必须预约」说成「不用管」。
+   */
+  booking_required: boolean | null
   booking_days: number | null
   booking_time: string | null
 }

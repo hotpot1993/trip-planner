@@ -57,6 +57,12 @@ class Candidate:
     # 等于把「值得去」与「注意什么」揉成一句含糊的话。
     highlights: tuple[ks.ClaimRow, ...] = ()
     avoids: tuple[ks.ClaimRow, ...] = ()
+    # 需不需要预约。**`None` 是「没有已复核的规则」，不是「不需要预约」**——
+    # 两者在界面上必须分得开。同样地，`booking_required=True` 而
+    # `booking_days` 为 None 是「要预约，但官方没公布放票口径」，
+    # 那不是「没有预约信息」。实测踩过：兵马俑那条规则就是这样，
+    # 当时界面上显示成「无预约信息」，等于把「必须预约」说成了「不用管」。
+    booking_required: bool | None = None
     booking_days: int | None = None  # 需不需要预约、提前几天
     booking_time: str | None = None
 
@@ -186,6 +192,7 @@ def city_candidates(
                     source=PoolSource.KNOWLEDGE,
                     highlights=highlights,
                     avoids=avoids,
+                    booking_required=bool(rule["booking_required"]) if rule else None,
                     booking_days=rule["advance_days"] if rule else None,
                     booking_time=rule["release_time"] if rule else None,
                 )

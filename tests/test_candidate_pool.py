@@ -204,8 +204,58 @@ class TestBookingIsAttached:
         self._rule(db, "B1", status="reviewed")
 
         row = cp.city_candidates("110100", conn=connect(db))[0]
+        assert row.booking_required is True
         assert row.booking_days == 7
         assert row.booking_time == "20:00"
+
+    def test_rule_without_release_window_still_says_booking_is_required(
+        self, db: Path
+    ) -> None:
+        """「要预约，但官方没公布放票口径」不能显示成「没有预约信息」。
+
+        实测踩过：兵马俑那条规则就是这样（advance_days 为 None），界面上
+        当时显示成「无预约信息」——等于把「必须预约」说成了「不用管」，
+        正是这个项目最怕的失败模式。
+        """
+        _city(db)
+        _poi(db, "B1", "秦始皇兵马俑博物馆")
+        _claim(db, poi_id="B1", text="要预约")
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT INTO booking_rule (poi_id, booking_required, advance_days, "
+                "status, evidence_url, reviewed_at, updated_at) "
+                "VALUES ('B1', 1, NULL, 'reviewed', 'https://example.cn/', '2026-01-01', ?)",
+                (NOW,),
+            )
+
+        row = cp.city_candidates("110100", conn=connect(db))[0]
+        assert row.booking_required is True
+        assert row.booking_days is None
+
+    def test_no_rule_is_not_the_same_as_no_booking(self, db: Path) -> None:
+        """没有已复核的规则时是 `None`——「不知道」，不是「不需要」。"""
+        _city(db)
+        _poi(db, "B1", "故宫博物院")
+        _claim(db, poi_id="B1", text="要预约")
+
+        row = cp.city_candidates("110100", conn=connect(db))[0]
+        assert row.booking_required is None
+
+    def test_rule_saying_not_required_is_reported_as_such(self, db: Path) -> None:
+        """已复核的「不需要预约」是一个结论，与「没有规则」是两回事。"""
+        _city(db)
+        _poi(db, "B1", "故宫博物院")
+        _claim(db, poi_id="B1", text="不用预约")
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT INTO booking_rule (poi_id, booking_required, status, "
+                "evidence_url, reviewed_at, updated_at) "
+                "VALUES ('B1', 0, 'reviewed', 'https://example.cn/', '2026-01-01', ?)",
+                (NOW,),
+            )
+
+        row = cp.city_candidates("110100", conn=connect(db))[0]
+        assert row.booking_required is False
 
     def test_draft_rule_does_not(self, db: Path) -> None:
         """未经复核的规则不得展示（Q10）。否则界面上会出现一条没人核过的
@@ -216,6 +266,7 @@ class TestBookingIsAttached:
         self._rule(db, "B1", status="draft")
 
         row = cp.city_candidates("110100", conn=connect(db))[0]
+        assert row.booking_required is None
         assert row.booking_days is None
         assert row.booking_time is None
 

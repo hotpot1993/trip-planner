@@ -157,6 +157,12 @@ def _register_align(sub) -> None:
     merge.add_argument("--apply", action="store_true", help="真的合并。不给就只报告")
     merge.set_defaults(_handler=_cmd_align_merge_pois)
 
+    recheck = actions.add_parser(
+        "recheck", help="重新对齐：看哪些结论的落点在算法改进后已经过时"
+    )
+    recheck.add_argument("--apply", action="store_true", help="真的搬。不给就只报告")
+    recheck.set_defaults(_handler=_cmd_align_recheck)
+
     align.set_defaults(_handler=lambda _args: _usage(align))
 
 
@@ -1048,6 +1054,50 @@ def _cmd_align_merge_pois(args: argparse.Namespace) -> int:
         print(f"  {key}：改了 {value} 行")
     print()
     print("指向旧实体的引用都已改到留下的那行上。")
+    return 0
+
+
+def _cmd_align_recheck(args: argparse.Namespace) -> int:
+    """重新对齐：看哪些结论的落点在算法改进后已经过时。
+
+    `align_pending` 只处理待办，一条待办解析之后就不会被重新检查，
+    所以**对齐算法的每一次改进都只对新数据生效**。这个命令把库里已有的
+    结论按现在的算法重跑一遍，把落点变了的报出来。
+    """
+    from lushu.services import realign
+    from lushu.store import transaction
+
+    print("按现在的对齐算法把库里每条提及重跑一遍……")
+    plans = realign.survey()
+    changed = [item for item in plans if item.changed]
+
+    if not changed:
+        print()
+        print(f"检查了 {len(plans)} 条提及，落点都没有变化")
+        return 0
+
+    print()
+    print(f"{len(changed)} 条提及的落点变了（共 {len(plans)} 条）：")
+    for item in sorted(changed, key=lambda p: -p.claim_count):
+        print()
+        print(f"  「{item.subject_name}」{item.claim_count} 条结论")
+        print(f"    现在挂在 {item.current_name}（{item.current_poi_id}）")
+        print(f"    重跑会挂到 {item.new_name}（{item.new_poi_id}）")
+
+    if not args.apply:
+        print()
+        print("这只是报告。要真搬加 --apply——搬一条结论等于替用户改了他要去的地方，")
+        print("而且不可逆，所以先看清楚。")
+        return 1
+
+    with transaction() as conn:
+        report = realign.apply_plans(changed, conn=conn)
+
+    print()
+    print(f"搬了 {report.moved_claims} 条结论（{report.moved_subjects} 条提及），"
+          f"并重算了独立来源数")
+    for name, why in report.skipped:
+        print(f"  跳过「{name}」：{why}")
     return 0
 
 
