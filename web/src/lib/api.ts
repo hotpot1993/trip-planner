@@ -856,7 +856,7 @@ export interface PipelineDonePayload {
     unresolved_subjects: number
     failed: { mention: string; error: string }[]
   }
-  group?: { compared: number; merged: number; groups: number }
+  group?: { compared: number; merged: number; groups: number; relinked: number; relink_compared: number }
   merge?: { created: number; extended: number; high_confidence: number; single_source: number }
   stats?: PipelineStatsOut
 }

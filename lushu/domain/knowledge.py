@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
@@ -19,6 +20,22 @@ from enum import StrEnum
 # 低于它的结论标为「待验证个例」而不是被丢弃——单源经验仍有参考价值，
 # 只是必须让用户知道自己正在看一条未经验证的信息。
 MIN_INDEPENDENT_SOURCES = 3
+
+
+def count_independent_sources(sources: Iterable[tuple[str, str | None]]) -> int:
+    """几个独立来源 = 几个**不同的来源组**；没有组的素材按自身算一个。
+
+    **这是 Q34 的唯一判据。** 界面、路书、命令行里那个「N 个独立来源」都由
+    它算出来，所以只能有这一份实现——两份实现会各按各的口径算（一份按素材
+    篇数、一份按来源组），而两边都自称「独立来源数」。
+
+    入参是（素材 id，来源组 id）的序列，**组号必须由调用方现查**。归组按设计
+    可以反复重跑（ADR-0008），所以「提纯那一刻把组号抄进证据行」得到的是一份
+    会过期的快照：重跑归组之后那些快照全是旧的，按它算出来的置信度不会跟着
+    变——而「按文字复制口径算出的高置信，第二层跑完之后要被降级」正是 ADR
+    要求的动作。真库里 39 条证据行的组号全是 NULL，就是这么来的。
+    """
+    return len({group or document for document, group in sources})
 
 
 class SubjectType(StrEnum):
@@ -121,6 +138,10 @@ class ClaimEvidence:
 
     source_document_id: str
     quote: str
+    # **这是提纯那一刻抄下来的快照，不是计数的依据。** 归组按设计可以反复
+    # 重跑（ADR-0008），所以这个值随时可能过时；算「几个独立来源」要现查
+    # 素材表，见 `count_independent_sources`。留着它是为了溯源时看得出
+    # 「这条引文当时被认为属于哪个来源」。
     source_group_id: str | None = None
     char_start: int | None = None
     char_end: int | None = None
@@ -172,5 +193,11 @@ class Claim:
 
     @property
     def distinct_source_groups(self) -> int:
-        """证据覆盖的独立来源数。用于校验独立的计数是否属实。"""
-        return len({e.source_group_id or e.source_document_id for e in self.evidence})
+        """证据覆盖的独立来源数。
+
+        注意它读的是证据上记的组号，也就是**提纯那一刻的快照**；要算「现在
+        算几个来源」必须现查素材表，走 `count_independent_sources`。
+        """
+        return count_independent_sources(
+            (e.source_document_id, e.source_group_id) for e in self.evidence
+        )

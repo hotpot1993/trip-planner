@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from datetime import date
 
 from lushu.domain.align import AlignResult
-from lushu.domain.knowledge import ClaimEvidence, Confidence, confidence_for
+from lushu.domain.knowledge import (
+    ClaimEvidence,
+    Confidence,
+    confidence_for,
+    count_independent_sources,
+)
 from lushu.store.connection import connect
 from lushu.store.ids import CLAIM, EVIDENCE, new_id
 
@@ -320,8 +325,10 @@ def save_claim(
         raise ValueError("无溯源的结论不得入库（DESIGN 4.5）")
 
     claim_id = new_id(CLAIM)
-    groups = {item.source_group_id or item.source_document_id for item in evidence}
-    count = len(groups)
+    live = _live_groups(conn, [item.source_document_id for item in evidence])
+    count = count_independent_sources(
+        (item.source_document_id, live.get(item.source_document_id)) for item in evidence
+    )
 
     conn.execute(
         "INSERT INTO claim (id, subject_type, subject_name, poi_id, poi_a_id, poi_b_id, "
@@ -400,20 +407,53 @@ def append_evidence(
     return True
 
 
+def _live_groups(
+    conn: sqlite3.Connection, document_ids: list[str]
+) -> dict[str, str | None]:
+    """素材 id → 它**现在**属于哪个来源组。
+
+    现查，不用证据行里抄下的那份。归组是可以反复重跑的步骤（ADR-0008），
+    抄在证据上的组号是提纯那一刻的快照，重跑之后就是旧的了。
+    """
+    unique = list(dict.fromkeys(document_ids))
+    if not unique:
+        return {}
+    marks = ",".join("?" * len(unique))
+    rows = conn.execute(
+        f"SELECT id, source_group_id FROM source_document WHERE id IN ({marks})", unique
+    ).fetchall()
+    return {row["id"]: row["source_group_id"] for row in rows}
+
+
 def recount_independent_sources(
     claim_id: str, *, conn: sqlite3.Connection
 ) -> tuple[int, Confidence]:
     """按**独立来源组**重算置信度。这是 Q34 的唯一执行点。
 
-    没有来源组的素材按自身 id 计——那是「本来就是独立的一篇」。
+    没找到素材行时按素材自身 id 计——那是「本来就是独立的一篇」。
     转载在同一组里，无论被同步到多少个站点都只计一次。
+
+    两处刻意的选择：
+
+    1. **现查素材表，不读 `claim_evidence.source_group_id`。** 那一列是提纯时
+       抄下的快照，而归组可以反复重跑（ADR-0008）——照快照算的话，重跑归组
+       之后置信度不会跟着变，而「按文字复制口径算出的高置信要在第二层跑完
+       之后被降级」正是 ADR 要求的动作。真库里 39 条证据行的组号全是 NULL，
+       于是同一条结论的两篇「素材」被算成了两个独立来源，其中一篇的标题
+       就叫《【转】…》。
+    2. **判据走 `count_independent_sources`**，与 `save_claim` 同一份实现。
+       原先这里是一句 SQL、那里是一行推导式，两处各算各的。
     """
-    row = conn.execute(
-        "SELECT COUNT(DISTINCT COALESCE(source_group_id, source_document_id)) AS n "
-        "FROM claim_evidence WHERE claim_id = ?",
+    rows = conn.execute(
+        "SELECT e.source_document_id, d.source_group_id "
+        "FROM claim_evidence e "
+        "LEFT JOIN source_document d ON d.id = e.source_document_id "
+        "WHERE e.claim_id = ?",
         (claim_id,),
-    ).fetchone()
-    count = int(row["n"])
+    ).fetchall()
+    count = count_independent_sources(
+        (row["source_document_id"], row["source_group_id"]) for row in rows
+    )
     confidence = confidence_for(count)
 
     conn.execute(

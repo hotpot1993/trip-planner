@@ -395,7 +395,13 @@ function RunSummary({ payload }: { payload: PipelineDonePayload }) {
           ，仍待人工 {payload.align.pending} 条
         </p>
       ) : null}
-      {payload.group ? <p>比对 {payload.group.compared} 对素材，合并 {payload.group.merged} 篇</p> : null}
+      {payload.group ? (
+        <p>
+          归组：文字复制一层处理 {payload.group.relink_compared} 篇、并组 {payload.group.relinked} 篇；
+          结论同源一层比对 {payload.group.compared} 对、合并 {payload.group.merged} 篇
+          ，现有 {payload.group.groups} 个来源组
+        </p>
+      ) : null}
       {payload.merge ? (
         <p>
           结论 {payload.merge.created} 条，高置信 {payload.merge.high_confidence} 条

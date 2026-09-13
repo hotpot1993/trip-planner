@@ -27,7 +27,12 @@ from pydantic import BaseModel, Field
 from lushu.api.errors import describe_error
 from lushu.api.plan_routes import format_sse
 from lushu.services import pipeline
-from lushu.services.ingest import ImportKind, ImportRequest, import_document
+from lushu.services.ingest import (
+    ImportKind,
+    ImportRequest,
+    import_document,
+    relink_reposts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +217,16 @@ async def _stream_pipeline(payload: PipelineIn, steps: list[str]) -> AsyncIterat
                     "failed": [{"mention": name, "error": err} for name, err in aligned.failed],
                 }
             elif step == "group":
+                # 两层都跑。第一层原先只在导入那一刻跑过，判据改过或导入时判错
+                # 的历史数据就永远修不回来（ADR-0008 说归组是可以反复执行的）。
+                relinked = relink_reposts()
                 grouped = pipeline.group_by_conclusions()
                 result["group"] = {
                     "compared": grouped.compared,
                     "merged": grouped.merged,
                     "groups": grouped.groups,
+                    "relinked": relinked.merged,
+                    "relink_compared": relinked.compared,
                 }
             else:
                 merged = pipeline.merge_claims()

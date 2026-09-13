@@ -151,12 +151,12 @@ def _register_group(sub) -> None:
     group = sub.add_parser("group", help="独立来源归组")
     actions = group.add_subparsers(dest="action")
 
-    run = actions.add_parser("run", help="按结论重合度归组（需先跑过提纯）")
+    run = actions.add_parser("run", help="两层归组：文字复制（重跑）→ 结论同源")
     run.add_argument(
         "--threshold",
         type=float,
         default=None,
-        help="判为同源所需的结论重合比例，默认 0.8。调低会把独立来源错并",
+        help="第二层判为同源所需的结论重合比例，默认 0.8。调低会把独立来源错并",
     )
     run.set_defaults(_handler=_cmd_group_run)
 
@@ -204,6 +204,11 @@ def _register_pipeline(sub) -> None:
     run = actions.add_parser("run", help="导入后的全流程：提纯 → 对齐 → 归组 → 合并")
     run.add_argument("--limit", type=int, default=50, help="每步最多处理几篇，默认 50")
     run.set_defaults(_handler=_cmd_pipeline_run)
+
+    merge = actions.add_parser(
+        "merge", help="合并同义结论并重算置信度（改过归组之后单独跑这一步）"
+    )
+    merge.set_defaults(_handler=_cmd_pipeline_merge)
 
     pipeline.set_defaults(_handler=lambda _args: _usage(pipeline))
 
@@ -1294,16 +1299,35 @@ def _cmd_extract_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_group_run(args: argparse.Namespace) -> int:
+    from lushu.services.ingest import relink_reposts
     from lushu.services.pipeline import DEFAULT_CONCLUSION_OVERLAP, group_by_conclusions
 
     threshold = args.threshold if args.threshold is not None else DEFAULT_CONCLUSION_OVERLAP
-    report = group_by_conclusions(threshold=threshold)
 
-    print(f"比对了 {report.compared} 对素材，合并 {report.merged} 篇")
-    print(f"现在共 {report.groups} 个独立来源组")
+    # 两层都要跑。第一层原先只在导入那一刻跑过，所以判据改过、或者导入时
+    # 判错了，历史数据永远修不回来——而 ADR-0008 说归组是「可以对同一批素材
+    # 反复执行的命令」。实测踩过：一道错的长度粗筛让一对 0.722 覆盖率的
+    # 转载长期计成两个独立来源。
+    first = relink_reposts()
+    print(f"第一层（文字复制）：处理 {first.compared} 篇，并组 {first.merged} 篇，"
+          f"现有 {first.groups} 个来源组")
+
+    second = group_by_conclusions(threshold=threshold)
+    print(f"第二层（结论同源）：比对 {second.compared} 对，合并 {second.merged} 篇，"
+          f"现有 {second.groups} 个来源组")
     print()
-    print("这一层按**提纯结果**判同源，认的是逐句改写的洗稿；")
-    print("照搬与节选在导入时已经按正文相似度归过组了（ADR-0008）")
+    print("第一层认照搬、节选与换标题重发，第二层认逐句改写的洗稿（ADR-0008）")
+    print("置信度按**来源组**计数，所以这两层跑完必须再跑一次 ls pipeline merge 重算")
+    return 0
+
+
+def _cmd_pipeline_merge(args: argparse.Namespace) -> int:
+    from lushu.services.pipeline import merge_claims
+
+    report = merge_claims()
+    print(f"结论 {report.created} 条，其中高置信 {report.high_confidence} 条，"
+          f"待验证个例 {report.single_source} 条")
+    print(f"给已有结论补证据 {report.extended} 条，因此少掉 {report.extended} 条重复")
     return 0
 
 
@@ -1500,6 +1524,7 @@ def _cmd_align_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_pipeline_run(args: argparse.Namespace) -> int:
+    from lushu.services.ingest import relink_reposts
     from lushu.services.pipeline import (
         align_pending,
         extract_documents,
@@ -1522,9 +1547,11 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     for name, error in aligned.failed:
         print(f"   失败「{name}」：{error}")
 
-    print("③ 归组（按结论重合度）")
+    print("③ 归组（两层：文字复制 → 结论同源）")
+    first = relink_reposts()
+    print(f"   第一层：并组 {first.merged} 篇，现有 {first.groups} 个来源组")
     grouped = group_by_conclusions()
-    print(f"   合并 {grouped.merged} 篇，现有 {grouped.groups} 个来源组")
+    print(f"   第二层：合并 {grouped.merged} 篇，现有 {grouped.groups} 个来源组")
 
     print("④ 合并同义结论并重算置信度")
     merged = merge_claims()

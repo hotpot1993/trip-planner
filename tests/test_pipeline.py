@@ -20,7 +20,7 @@ from lushu.adapters.poi import PoiSearchResult
 from lushu.domain.knowledge import ClaimEvidence
 from lushu.domain.poi import CandidatePoi
 from lushu.services import knowledge_store as ks
-from lushu.services.ingest import ImportRequest, import_document
+from lushu.services.ingest import ImportRequest, import_document, relink_reposts
 from lushu.services.pipeline import (
     DEFAULT_CONCLUSION_OVERLAP,
     MIN_CONCLUSIONS_TO_COMPARE,
@@ -571,6 +571,110 @@ class TestConfidence:
             count, confidence = ks.recount_independent_sources(claim_id, conn=conn)
 
         assert count == 1
+        assert confidence.value == "single_source"
+
+    def test_regrouping_after_the_fact_lowers_the_confidence(self, db: Path) -> None:
+        """归组跑在提纯之后时，置信度必须跟着降——这是 ADR-0008 要求的动作。
+
+        「置信度一旦按文字复制口径算出高置信，第二层跑完之后是要被降级的。」
+        证据行上的组号是提纯那一刻抄下来的快照，那时还没有组、全是 NULL；
+        照快照算的话这条「高置信」永远不会被降级，重跑归组等于白跑。
+        """
+        docs = [(f"src_{i}", None) for i in range(3)]
+        self._seed_claims_from(db, docs)
+
+        with transaction(db) as conn:
+            claim_id = ks.save_claim(
+                conn=conn,
+                subject_type="poi",
+                subject_name="故宫",
+                poi_id="B000A8UIN8",
+                polarity="avoid",
+                facet="entrance",
+                text="只有午门能进",
+                evidence=[
+                    ClaimEvidence(source_document_id=doc, quote="只有午门能进")
+                    for doc, _ in docs
+                ],
+                first_seen_at="2026-09-12",
+                verify_due_at="2027-03-11",
+            )
+            count, confidence = ks.recount_independent_sources(claim_id, conn=conn)
+            assert count == 3, "先得有高置信，否则下面降级什么也证明不了"
+            assert confidence.value == "high"
+
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT INTO source_group (id, basis, created_at) "
+                "VALUES ('grp_later', 'similarity', '2026-09-13')"
+            )
+            conn.execute(
+                "UPDATE source_document SET source_group_id = 'grp_later' "
+                "WHERE id IN ('src_0', 'src_1')"
+            )
+            after_count, after_confidence = ks.recount_independent_sources(claim_id, conn=conn)
+
+        assert after_count == 2, "两篇归成一个来源之后只算两个来源"
+        assert after_confidence.value == "single_source"
+
+    def test_a_repost_found_on_a_rerun_stops_inflating_the_count(self, db: Path) -> None:
+        """入库时漏判的转载，重跑第一层之后不该再算一个独立来源。
+
+        这是真库里那对素材的形状：459 字的原文与 99 字的《【转】西安博物馆
+        预约提示》，同一条「陕历博周一闭馆」被算成两个独立来源，而两篇里
+        有一篇标题就写着「转」。把「重跑第一层 → 重算置信度」接起来测。
+        """
+        paragraph = (
+            "陕西历史博物馆是免费的，但是必须预约，而且要提前 3 天在官方公众号预约，"
+            "每天早上 8 点放票。注意陕历博周一闭馆，安排行程的时候要避开。"
+        )
+        long_body = paragraph + "\n\n" + "城墙傍晚上去最好，租自行车骑一圈 13.7 公里。" * 12
+        short_body = "【转】西安博物馆预约提示：\n\n" + paragraph + "\n\n（本文转自网络）"
+        other_body = "兵马俑在临潼，门票 120。回民街商业化严重，不如去洒金桥。" * 4
+
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT INTO city (adcode, name, updated_at) VALUES ('110100', '北京', '2026-09-12')"
+            )
+            insert_poi(conn, gugong())
+            for index, body in enumerate((long_body, short_body, other_body)):
+                conn.execute(
+                    "INSERT INTO source_document (id, site, body_text, body_sha256, "
+                    "content_sha256, imported_at, import_kind) "
+                    "VALUES (?, 'manual', ?, ?, ?, ?, 'paste')",
+                    (
+                        f"src_{index}",
+                        body,
+                        f"sha-{index}",
+                        f"sha-{index}",
+                        f"2026-09-12T10:00:0{index}",
+                    ),
+                )
+
+        # 提纯发生在归组之前，所以证据上的组号全是空的——真库就是这样
+        with transaction(db) as conn:
+            claim_id = ks.save_claim(
+                conn=conn,
+                subject_type="poi",
+                subject_name="陕历博",
+                poi_id="B000A8UIN8",
+                polarity="avoid",
+                facet="closure",
+                text="周一闭馆",
+                evidence=[
+                    ClaimEvidence(source_document_id=f"src_{i}", quote="周一闭馆")
+                    for i in range(3)
+                ],
+                first_seen_at="2026-09-12",
+                verify_due_at=None,
+            )
+
+        relink_reposts(conn=connect(db))
+
+        with transaction(db) as conn:
+            count, confidence = ks.recount_independent_sources(claim_id, conn=conn)
+
+        assert count == 2, "三篇素材里有一对是转载，只该算两个独立来源"
         assert confidence.value == "single_source"
 
     def test_append_evidence_ignores_duplicate_document(self, db: Path) -> None:

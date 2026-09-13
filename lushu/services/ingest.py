@@ -19,13 +19,19 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
 
-from lushu.domain.similarity import DUPLICATE_COVERAGE, normalize_body, overlap
+from lushu.domain.similarity import (
+    DUPLICATE_COVERAGE,
+    MIN_RUN_CHARS,
+    normalize_body,
+    overlap,
+)
 from lushu.store.connection import connect
 from lushu.store.ids import SOURCE, SOURCE_GROUP, new_id
 
@@ -231,7 +237,7 @@ def import_document(
         group_id = None
         if repost_of is not None:
             group_id = repost_of["source_group_id"] or _ensure_group(
-                active, repost_of, basis="domain_author", now=timestamp
+                active, repost_of, basis="similarity", now=timestamp
             )
             bound_repost = repost_of
         else:
@@ -285,6 +291,59 @@ def _find_exact(conn: sqlite3.Connection, digest: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def _maybe_repost(left: str, right: str, *, threshold: float = DUPLICATE_COVERAGE) -> bool:
+    """粗筛：返回 False 时，保证两篇的 LCS 覆盖**一定**低于阈值。
+
+    **这里原先的写法是错的，代价是信任模型的闸门失效。** 旧版是
+    「较短的一篇 × 3 < 较长的一篇就跳过」，理由是「长度差三倍以上时，
+    较短的那篇被覆盖满也达不到阈值」。这句话本身就不成立：覆盖率的分母
+    就是**较短的那一篇**（`similarity.overlap` 特意换过序），所以短篇被
+    整篇照搬时覆盖率是 1.0，与两篇的长度差无关。
+
+    真实代价：库里 99 字的《【转】西安博物馆预约提示》对 459 字的原文，
+    真覆盖率 **0.722**（阈值 0.60），却因为 `99 × 3 < 459` 从没进过比对。
+    两篇都没归组，于是同一条「陕历博周一闭馆」按**两篇素材**计成了
+    「2 个独立来源」——正是设计第十一节列为致命的「置信度退化成转发量」，
+    而那两篇的正文重合度连肉眼都看得出来。
+
+    现在的上界取自**字符多重集合的交集**：公共片段里的每个字符都必须
+    同时出现在两篇里，所以「交集字符数 ÷ 较短篇长度」一定不小于真覆盖率。
+    它是 O(n) 的，比 `SequenceMatcher` 便宜得多，而筛掉的都是真的达不到
+    阈值的那些对。空白没有先抹掉——那只会让上界更松，不会漏。
+    """
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if len(shorter) < MIN_RUN_CHARS:
+        # 公共片段至少要 MIN_RUN_CHARS 才计数，短于此则 covered 恒为 0
+        return False
+    shared = sum((Counter(shorter) & Counter(longer)).values())
+    return shared >= threshold * len(shorter)
+
+
+def best_repost_candidate(
+    rows: list[sqlite3.Row] | tuple[sqlite3.Row, ...],
+    body: str,
+    *,
+    threshold: float = DUPLICATE_COVERAGE,
+) -> tuple[sqlite3.Row | None, float]:
+    """在这一批素材里找 `body` 的「原件」，返回（原件，覆盖率）。
+
+    「什么算转载」只在这里判一次：导入新素材（`_find_repost`）与重跑历史
+    （`relink_reposts`）走的是同一个函数。两处各写一遍的话，重跑出来的分组
+    迟早与导入时的分组长得不一样——而两个分组都自称是第一层。
+    """
+    best: sqlite3.Row | None = None
+    best_coverage = 0.0
+    for row in rows:
+        existing = row["body_text"] or ""
+        if not _maybe_repost(body, existing, threshold=threshold):
+            continue
+        result = overlap(body, existing)
+        if result.coverage >= threshold and result.coverage > best_coverage:
+            best = row
+            best_coverage = result.coverage
+    return best, best_coverage
+
+
 def _find_repost(
     conn: sqlite3.Connection,
     body: str,
@@ -293,31 +352,88 @@ def _find_repost(
 ) -> tuple[sqlite3.Row | None, float | None]:
     """在已有素材里找这一篇的「原件」。
 
-    先用长度做粗筛：两篇长度差三倍以上时，较短的那篇被覆盖满也不可能达到阈值，
-    所以不必算。这是自用规模下让 O(n) 次比对跑得动的最简单办法，
-    真正的索引要等素材量上来再说（设计里说得很清楚，现在不上向量库）。
+    先用 `_maybe_repost` 粗筛，再算真正的 LCS 覆盖。这是自用规模下让 O(n)
+    次比对跑得动的最简单的办法，真正的索引要等素材量上来再说（设计里说得
+    很清楚，现在不上向量库）。
     """
     rows = conn.execute(
         "SELECT id, site, author, body_text, source_group_id FROM source_document "
         "ORDER BY imported_at DESC"
     ).fetchall()
 
-    best: sqlite3.Row | None = None
-    best_coverage = 0.0
-
-    for row in rows:
-        existing = row["body_text"] or ""
-        shorter, longer = sorted((len(existing), len(body)))
-        if shorter == 0 or shorter * 3 < longer:
-            continue
-        result = overlap(body, existing)
-        if result.coverage >= threshold and result.coverage > best_coverage:
-            best = row
-            best_coverage = result.coverage
-
+    best, coverage = best_repost_candidate(rows, body, threshold=threshold)
     if best is None:
         return None, None
-    return best, round(best_coverage, 4)
+    return best, round(coverage, 4)
+
+
+@dataclass
+class RelinkReport:
+    """第一层归组重跑的结果。"""
+
+    compared: int = 0  # 本次真正做了候选比对的篇数（已经归过组的不再重算）
+    merged: int = 0  # 本次新并进已有组的篇数
+    groups: int = 0  # 现在有多少个来源组
+
+
+def relink_reposts(
+    *, conn: sqlite3.Connection | None = None, threshold: float = DUPLICATE_COVERAGE
+) -> RelinkReport:
+    """把第一层（文字复制）在**已经入库的素材**上重跑一遍。
+
+    为什么必须有这个命令：第一层原先只在导入那一刻跑，也就是说判据改过、
+    或者导入时判错了，历史数据永远修不回来。这不是假想——库里那对 459 字
+    的原文与 99 字的《【转】西安博物馆预约提示》因为一道错的长度粗筛从没
+    进过比对，长期计成两个独立来源。ADR-0008 说归组是「可以对同一批素材
+    反复执行的命令」，第二层做到了，第一层当时没有。
+
+    **只在更早导入的素材里找原件。** 原件总是先来的，而且这样不会转出环。
+    同一秒导入的素材按 id 定序——不按「谁更像原件」猜，那种猜法在真实数据
+    上分不出对错，只会让重跑的结果依赖于一段不可复现的顺序。
+
+    **已经归过组的不再重算。** 它的位置是上一次判断的结果，重跑只负责补上
+    漏掉的；每次重算一遍还会让「并了几篇」这个数字每次都报一遍，看不出
+    到底有没有变化。组号在本轮里可能刚被建出来，所以走一个随循环更新的
+    字典而不是开头取的那份快照。
+    """
+    owned = conn is None
+    active = conn or connect()
+    report = RelinkReport()
+    try:
+        rows = active.execute(
+            "SELECT id, site, author, body_text, source_group_id FROM source_document "
+            "ORDER BY imported_at, id"
+        ).fetchall()
+        group_of: dict[str, str | None] = {row["id"]: row["source_group_id"] for row in rows}
+
+        earlier: list[sqlite3.Row] = []
+        for row in rows:
+            document_id = row["id"]
+            if group_of[document_id] is None:
+                report.compared += 1
+                original, coverage = best_repost_candidate(
+                    earlier, row["body_text"] or "", threshold=threshold
+                )
+                if original is not None:
+                    group_id = group_of[original["id"]] or _ensure_group(
+                        active, original, basis="similarity", now=_now()
+                    )
+                    group_of[original["id"]] = group_id
+                    group_of[document_id] = group_id
+                    active.execute(
+                        "UPDATE source_document SET source_group_id = ?, group_score = ? "
+                        "WHERE id = ?",
+                        (group_id, round(coverage, 4), document_id),
+                    )
+                    report.merged += 1
+            earlier.append(row)
+
+        active.commit()
+        report.groups = len({group for group in group_of.values() if group})
+    finally:
+        if owned:
+            active.close()
+    return report
 
 
 def _ensure_group(

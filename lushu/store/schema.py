@@ -452,6 +452,11 @@ ALTER TABLE alignment_task ADD COLUMN extracted_claims_json TEXT;
 # 也就是 similarity；域名与作者留着做人工复核的参考。保留它不动，
 # 理由与所有已发布的迁移一样：不改写历史。
 #
+# **订正（M7）**：上面那句「没被用到」当时是错的——`ingest.import_document`
+# 给转载建组时写的就是 `domain_author`，判据明明是 LCS 覆盖，标签却写着
+# 「同站同作者」。现在导入与重跑两处都写 `similarity`，这句话才成立。
+# 真库里当时一个组都没有，所以没有历史数据需要迁移。
+#
 # SQLite 不能直接改 CHECK 约束，只能重建表。这张表极小（一个来源组一行），
 # 重建的代价可以接受。
 #

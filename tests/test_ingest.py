@@ -10,16 +10,18 @@ from pathlib import Path
 
 import pytest
 
-from lushu.domain.similarity import DUPLICATE_COVERAGE
+from lushu.domain.similarity import DUPLICATE_COVERAGE, overlap
 from lushu.services.ingest import (
     DuplicateKind,
     ImportKind,
     ImportRequest,
+    _maybe_repost,
     detect_site,
     fingerprint_text,
     html_to_text,
     import_document,
     read_source_file,
+    relink_reposts,
     sha256_text,
 )
 from lushu.store import connect, initialize
@@ -38,6 +40,41 @@ REPOST = """【转】故宫入口提示：
 DIFFERENT = """西安的陕历博必须提前3天预约，每天早上8点放票，周一闭馆。
 兵马俑在临潼，门票120，现场不卖票。从西安北站坐14号线转9号线能到。
 回民街商业化严重，不如去洒金桥。城墙傍上去，南门租自行车骑一圈13.7公里。"""
+
+# 真库里的形状：一篇 459 字的正文，和一篇 99 字的、逐字照搬其中两段的转载。
+# **旧的长度粗筛（短篇 × 3 < 长篇就跳过）会把这一对直接扔掉**，
+# 于是两篇都没归组，同一条「陕历博周一闭馆」按两篇素材计成「2 个独立来源」。
+# 这里不抄真数据（抄错一个字就变成另一个测试），改用同形状的自造样本，
+# 并在测试里断言形状确实成立——形状被改坏时测试要大声报错，
+# 而不是静默地什么也没测。
+LONG_ARTICLE = """西安三天，博物馆和城墙
+
+去西安主要为了看博物馆。这里说几个我实际遇到的问题，都是出发前没料到的。
+
+陕西历史博物馆是免费的，但是必须预约，而且要提前 3 天在官方公众号预约，
+每天早上 8 点放票。这个馆很难约，我约了两天才约上，节假日基本靠抢。
+注意陕历博周一闭馆，安排行程的时候要避开。如果实在约不上，可以考虑买
+大唐遗宝展的票进去，那个是要收费的，人少一些，但至少能进馆。
+
+兵马俑不在西安市区，在临潼区，从西安北站坐地铁 14 号线再转 9 号线能到，
+全程一个半小时。也可以坐游 5 路（306 路）从火车站东广场直达，票价 7 块，
+但是这个车路上会拉你去买玉，不要下车，坚持坐到终点。兵马俑的门票是
+120 块，需要提前在官网或者公众号买，现场不卖票，到了门口再想办法很被动。
+
+城墙我推荐傍晚上去，南门上，租自行车骑一圈，全程 13.7 公里，一个半小时
+左右。白天上城墙太晒了，城墙上没有什么遮阴的地方，夏天去要有准备。
+
+回民街我个人的意见是不用专门去，商业化太严重，同样是吃肉夹馍和泡馍，
+洒金桥那边更便宜也更地道，本地人去的也多。
+
+大唐不夜城晚上去，人是真的多，尤其是七点到九点，带小孩的话要看好。"""
+
+SHORT_EXCERPT = """【转】西安博物馆预约提示：
+
+陕西历史博物馆是免费的，但是必须预约，而且要提前 3 天在官方公众号预约，
+每天早上 8 点放票。注意陕历博周一闭馆，安排行程的时候要避开。
+
+（本文转自网络，供参考）"""
 
 
 @pytest.fixture
@@ -279,9 +316,11 @@ class TestImportDocument:
         assert groups == 1
 
     def test_short_article_does_not_match_a_long_one(self, db: Path) -> None:
-        """长度差太远时不必算相似度，也不该误判。
+        """长度差太远的两篇不该误判为同一来源。
 
-        「提前预约」这类短句在两篇里都有，但两篇不是同一篇。
+        「提前预约」这类短句在两篇里都有，但两篇不是同一篇。注意这里量的
+        不是「有没有被粗筛跳过」——粗筛跳过的只保证真覆盖率低于阈值，
+        而这一对本来覆盖率就是 0。
         """
         conn = connect(db)
         try:
@@ -291,6 +330,76 @@ class TestImportDocument:
             conn.close()
 
         assert tiny.duplicate is DuplicateKind.NEW
+
+
+class TestShortExcerptOfALongArticle:
+    """一篇短文逐字照搬长篇的一段，必须认出是转载。
+
+    这一组测的是一个**真的发生过**的错：旧的长度粗筛写着
+    「较短的一篇 × 3 < 较长的一篇就跳过」，理由是「长度差三倍以上时短篇
+    被覆盖满也达不到阈值」。但覆盖率的分母就是较短的那一篇，短篇被整篇
+    照搬时覆盖率是 1.0，与长度差无关——于是真库里 99 字对 459 字的那对
+    （真覆盖率 0.722）从没进过比对，两篇都没归组。代价是同一条结论按
+    **两篇素材**计成了「2 个独立来源」，也就是设计第十一节列为致命的
+    「置信度退化成转发量」。
+    """
+
+    def test_the_fixture_really_has_the_shape_that_broke_it(self) -> None:
+        """先证明样本确实长得像出事的那对，否则下面两条测的是别的东西。"""
+        assert len(SHORT_EXCERPT) * 3 < len(LONG_ARTICLE), "长度差必须大于三倍"
+        assert overlap(LONG_ARTICLE, SHORT_EXCERPT).coverage >= DUPLICATE_COVERAGE
+
+    def test_verbatim_excerpt_is_recognized_as_a_repost(self, db: Path) -> None:
+        conn = connect(db)
+        try:
+            original = import_document(ImportRequest(body=LONG_ARTICLE), conn=conn)
+            excerpt = import_document(
+                ImportRequest(
+                    body=SHORT_EXCERPT, url="https://you.ctrip.com/travels/xian1/9.html"
+                ),
+                conn=conn,
+            )
+            rows = conn.execute(
+                "SELECT id, source_group_id FROM source_document"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert excerpt.duplicate is DuplicateKind.REPOST
+        assert excerpt.duplicate_of == original.document_id
+        assert excerpt.coverage is not None and excerpt.coverage >= DUPLICATE_COVERAGE
+        # 关键的一半：**两篇都要挂进同一个组**。只标出「这是转载」而不归组，
+        # 计数时仍然按两篇算，闸门等于没关。
+        groups = {row["id"]: row["source_group_id"] for row in rows}
+        assert groups[original.document_id] is not None
+        assert groups[original.document_id] == groups[excerpt.document_id]
+
+    def test_the_prune_never_throws_away_a_real_duplicate(self) -> None:
+        """粗筛的不变量：被它挡掉的对，真覆盖率一定低于阈值。
+
+        这是 O(n) 上界的全部意义所在——它只能筛掉**确定**不够格的对。
+        """
+        bodies = [ORIGINAL, REPOST, DIFFERENT, LONG_ARTICLE, SHORT_EXCERPT]
+        for left in bodies:
+            for right in bodies:
+                if left is right:
+                    continue
+                if _maybe_repost(left, right):
+                    continue
+                assert overlap(left, right).coverage < DUPLICATE_COVERAGE, (
+                    "粗筛把一对真的转载挡掉了"
+                )
+
+    def test_the_prune_still_rejects_unrelated_pairs(self) -> None:
+        """粗筛不能退化成恒真——否则它就只是白算一遍。
+
+        注意它**故意是松的**：「故宫要提前预约，周一闭馆。」里的字有十一二个
+        都能在这篇故宫正文里找到，上界因此过线，放行给 `overlap` 去算——
+        这是对的，上界只承诺「不够格的一定挡掉」，不承诺「够格的一定放行」。
+        真判据仍然是覆盖率。
+        """
+        assert not _maybe_repost(SHORT_EXCERPT, DIFFERENT)
+        assert not _maybe_repost("甲乙丙丁戊己庚辛壬癸", "子丑寅卯辰巳午未申酉戌亥")
 
     def test_empty_body_is_rejected(self, db: Path) -> None:
         with pytest.raises(ValueError, match="正文为空"):
@@ -375,7 +484,119 @@ class TestImportDocument:
         assert row["body_sha256"] == row["content_sha256"]
 
 
-class TestFingerprint:
+class TestRelinkReposts:
+    """第一层归组能在**已经入库**的素材上重跑。
+
+    这一组测的是「修好算法 ≠ 修好数据」那件事：第一层原先只在导入那一刻跑，
+    所以判据改过、或者导入时判错了，历史数据永远修不回来。真库里就有一对
+    这样的素材（459 字的原文与 99 字的转载），长期计成两个独立来源。
+    """
+
+    @staticmethod
+    def _insert(db: Path, document_id: str, body: str, *, imported_at: str) -> None:
+        """直接入库，绕过导入时的判重——专门造「已经躺在库里」的状态。"""
+        conn = connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO source_document (id, site, body_text, body_sha256, "
+                "content_sha256, imported_at, import_kind) "
+                "VALUES (?, 'manual', ?, ?, ?, ?, 'paste')",
+                (document_id, body, f"sha-{document_id}", f"sha-{document_id}", imported_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _groups(db: Path) -> dict[str, str | None]:
+        conn = connect(db)
+        try:
+            return {
+                row["id"]: row["source_group_id"]
+                for row in conn.execute("SELECT id, source_group_id FROM source_document")
+            }
+        finally:
+            conn.close()
+
+    def test_a_missed_repost_is_found_when_the_layer_is_rerun(self, db: Path) -> None:
+        """导入时漏判的转载，重跑要能补上，并且**两篇都挂进同一个组**。"""
+        self._insert(db, "src_long", LONG_ARTICLE, imported_at="2026-09-12T10:00:00")
+        self._insert(db, "src_short", SHORT_EXCERPT, imported_at="2026-09-12T10:00:01")
+
+        report = relink_reposts(conn=connect(db))
+
+        assert report.merged == 1
+        assert report.groups == 1
+        groups = self._groups(db)
+        assert groups["src_long"] is not None
+        assert groups["src_long"] == groups["src_short"]
+
+    def test_the_pair_is_grouped_whichever_came_first(self, db: Path) -> None:
+        """谁先入库不影响结论，只影响谁被当成原件。
+
+        「原件总是先来的」是个假设，不是事实——同一批囤稿的时间戳可能一模一样。
+        所以这里要证明假设不成立时也不会分成两组。
+        """
+        self._insert(db, "src_short", SHORT_EXCERPT, imported_at="2026-09-12T10:00:00")
+        self._insert(db, "src_long", LONG_ARTICLE, imported_at="2026-09-12T10:00:01")
+
+        relink_reposts(conn=connect(db))
+
+        groups = self._groups(db)
+        assert groups["src_long"] is not None
+        assert groups["src_long"] == groups["src_short"]
+
+    def test_a_chain_of_reposts_lands_in_one_group(self, db: Path) -> None:
+        """A←B←C 的链式转载要落在一个组里，不能变成两个组。
+
+        B 的组是**本轮才建**的，而候选列表是循环开始时取的快照——照着快照里
+        那个 NULL 走，C 会被塞进第二个组，一条链被拆成两条。
+        """
+        middle = SHORT_EXCERPT + "\n\n再加一句自己的话，让 C 与 B 更近。"
+        self._insert(db, "src_a", LONG_ARTICLE, imported_at="2026-09-12T10:00:00")
+        self._insert(db, "src_b", middle, imported_at="2026-09-12T10:00:01")
+        # C 抄的是 B（比 A 短，覆盖率更高），而 B 到此刻才刚被挂进 A 的组
+        self._insert(db, "src_c", middle, imported_at="2026-09-12T10:00:02")
+
+        relink_reposts(conn=connect(db))
+
+        groups = self._groups(db)
+        assert groups["src_a"] is not None
+        assert groups["src_a"] == groups["src_b"] == groups["src_c"]
+
+    def test_independent_articles_are_left_alone(self, db: Path) -> None:
+        """各写各的不能并——错并会把高置信结论降级。"""
+        self._insert(db, "src_1", ORIGINAL, imported_at="2026-09-12T10:00:00")
+        self._insert(db, "src_2", DIFFERENT, imported_at="2026-09-12T10:00:01")
+        self._insert(db, "src_3", LONG_ARTICLE, imported_at="2026-09-12T10:00:02")
+
+        report = relink_reposts(conn=connect(db))
+
+        assert report.merged == 0
+        assert report.groups == 0
+        assert set(self._groups(db).values()) == {None}
+
+    def test_rerunning_does_not_change_anything(self, db: Path) -> None:
+        """同一条命令可以反复执行（ADR-0008），第二次不该再动数据。"""
+        self._insert(db, "src_long", LONG_ARTICLE, imported_at="2026-09-12T10:00:00")
+        self._insert(db, "src_short", SHORT_EXCERPT, imported_at="2026-09-12T10:00:01")
+
+        conn = connect(db)
+        try:
+            first = relink_reposts(conn=conn)
+            before = self._groups(db)
+            second = relink_reposts(conn=conn)
+            after = self._groups(db)
+        finally:
+            conn.close()
+
+        assert first.merged == 1
+        assert second.merged == 0
+        assert second.groups == 1
+        assert before == after
+
+
+
     def test_whitespace_layout_does_not_change_the_fingerprint(self) -> None:
         """同一段话从两个站点复制下来换行位置不同，指纹必须一致。"""
         assert fingerprint_text("甲 乙\n丙") == fingerprint_text("甲乙丙")
