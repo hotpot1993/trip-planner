@@ -240,38 +240,95 @@ class TestRatingFill:
 
 
 class TestTheRatingGate:
-    """**已知边界，不是我们想要的最终行为。**
+    """池子条目**不受**评分门禁管；高德补的那部分照旧受管。
 
-    引擎的 `attraction_search_node` 拿到清单之后要过一道 `filter_by_rating`，
-    评分缺失一律不达标。池子里没评分的地方会被它丢掉。
+    引擎原先那道 `filter_by_rating` 的意图是滤掉高德搜出来的噪声（评分缺失的
+    往往是个广场、停车场、上车点）。但池子里的地方不是「高德搜出来的」——
+    它们是网友真的写过的地方，评分缺失只是高德没给（实测**夫子庙就没有**）。
+    拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
 
-    我们这一侧改不掉它：那道门禁在**节点**里，而 `graph.py` 对节点另有一份
-    模块级绑定，要换就得连节点一起换（超出「只替换搜索」的范围）。
-    实测高德对夫子庙**根本没有评分**——不是我们没取到，是它没有。
-    所以这件事补不上，只能记在案。
-
-    这两条钉住现状：哪天有人把节点也换了，它们会红，那时应当连同
-    `docs/M5-STATUS.md` 里的记录一起改掉，而不是默默删掉测试。
+    代价是那个节点的几行逻辑在我们这边留了一份副本：所以这里既钉「池子豁免」，
+    也钉「高德那部分照旧被滤」——只钉一半，副本就可能在另一半点上悄悄走偏。
     """
 
-    def _spots(self) -> list[dict]:
-        return [
-            {"name": "夫子庙", "rating": None},
-            {"name": "中山陵景区", "rating": 4.9},
-            {"name": "某个广场", "rating": 3.5},
-        ]
+    def _run(self, *, pool_names: set[str], spots: list[dict], min_rating: float = 4.0):
+        """把替换后的节点跑一遍，喂进去一份假的「高德搜索结果」。"""
+        return _PoolNode(
+            pool=[_pool_poi(name) for name in pool_names],
+            amap=spots,
+            min_rating=min_rating,
+        ).run()
 
-    def test_a_pool_entry_without_a_rating_is_dropped(self) -> None:
-        from third_party.floattrip.planning.helpers import filter_by_rating
+    def test_a_pool_entry_without_a_rating_survives(self) -> None:
+        """夫子庙：高德对它根本没有评分，但网友写过，所以它要活下来。"""
+        result = self._run(
+            pool_names={"夫子庙"},
+            spots=[
+                {"name": "夫子庙", "rating": None},
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "某个广场", "rating": 3.5},
+            ],
+        )
 
-        kept, dropped = filter_by_rating(self._spots(), 4.0)
+        assert [spot["name"] for spot in result["pois"]] == ["夫子庙", "中山陵景区"]
 
-        assert [spot["name"] for spot in kept] == ["中山陵景区"]
-        assert "夫子庙" in [spot["name"] for spot in dropped]
+    def test_amap_spots_are_still_filtered(self) -> None:
+        """高德那部分照旧受管——不然这道门禁就等于拆了。"""
+        result = self._run(
+            pool_names=set(),
+            spots=[
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "某个广场", "rating": 3.5},
+                {"name": "没评分的广场", "rating": None},
+            ],
+        )
 
-    def test_the_pool_entry_is_in_the_list_before_the_gate(self) -> None:
-        """它确实进了清单（我们的替换做到了），是门禁把它筛掉的。"""
-        assert [spot["name"] for spot in self._spots()][0] == "夫子庙"
+        assert [spot["name"] for spot in result["pois"]] == ["中山陵景区"]
+
+    def test_pool_entries_come_first(self) -> None:
+        result = self._run(
+            pool_names={"老门东"},
+            spots=[
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "老门东", "rating": 4.8},
+            ],
+        )
+
+        assert [spot["name"] for spot in result["pois"]] == ["老门东", "中山陵景区"]
+
+    def test_a_place_is_not_listed_twice(self) -> None:
+        """池子里的地方大多也搜得到：不能因为来源不同就出现两遍。"""
+        result = self._run(
+            pool_names={"夫子庙"},
+            spots=[{"name": "夫子庙", "rating": 4.8}],
+        )
+
+        assert [spot["name"] for spot in result["pois"]] == ["夫子庙"]
+
+    def test_the_history_note_says_what_happened(self) -> None:
+        """阶段日志里要能看出「池子几个、高德几个、滤掉几个」。"""
+        result = self._run(
+            pool_names={"夫子庙"},
+            spots=[
+                {"name": "夫子庙", "rating": None},
+                {"name": "某个广场", "rating": 3.5},
+            ],
+        )
+
+        note = result["history"][-1]
+        assert "候选池 1 个" in note
+        assert "不受评分门禁管" in note
+        assert "rating≥4.0 保留 0" in note
+
+
+class _FakeState:
+    """引擎状态的替身：节点只读这四个字段。"""
+
+    def __init__(self, **fields: object) -> None:
+        self.destination = fields.get("destination")
+        self.max_spots = fields.get("max_spots", 30)
+        self.min_rating = fields.get("min_rating", 4.0)
+        self.history = fields.get("history", [])
 
 
 class TestToSpot:
@@ -327,107 +384,174 @@ class TestToSpot:
         assert pool_search.to_spot(self._poi(lat_gcj02=None, lng_gcj02=None)) is None
 
 
-class TestPoolFirstSearch:
-    """替换之后的行为。
+class _FakeState:
+    """引擎状态的替身：节点只读这四个字段。"""
 
-    这几条直接把 `_pool_first` 装到引擎模块上再卸下，而不是走 `install()`：
-    要验的是**包装本身**，而 `install` 有自己的用例（见 `TestInstall`）。
+    def __init__(self, **fields: object) -> None:
+        self.destination = fields.get("destination")
+        self.max_spots = fields.get("max_spots", 30)
+        self.min_rating = fields.get("min_rating", 4.0)
+        self.history = fields.get("history", [])
+
+
+class _PoolNode:
+    """跑一遍替换后的节点，喂进去一个假的「高德搜索」结果。"""
+
+    def __init__(self, *, pool: list[CandidatePoi], amap: list[dict], min_rating: float = 4.0):
+        self.pool = pool
+        self.amap = amap
+        self.min_rating = min_rating
+        self.asked: list[str] = []
+
+    def run(self) -> dict:
+        import asyncio
+
+        async def amap_search(city: str, api_key: str, *, max_spots: int = 30):
+            self.asked.append(city)
+            return list(self.amap)
+
+        before = pool_search._state.get("original")
+        pool_search._state["original"] = amap_search
+        try:
+            node = pool_search._pool_exempt_node(lambda _city: list(self.pool))
+            state = _FakeState(
+                destination="南京", max_spots=30, min_rating=self.min_rating, history=[]
+            )
+            return asyncio.run(node(state))
+        finally:
+            pool_search._state["original"] = before
+
+
+def _pool_poi(name: str) -> CandidatePoi:
+    return CandidatePoi(poi_id=f"B_{name}", name=name, lat_gcj02=32.0, lng_gcj02=118.8)
+
+
+class TestTheSearchNode:
+    """替换后的节点：池子在前、池子条目不受评分门禁管。
+
+    引擎原先那道 `filter_by_rating` 的意图是滤掉高德搜出来的噪声（评分缺失的
+    往往是个广场、停车场、上车点）。但池子里的地方不是「高德搜出来的」——
+    它们是网友真的写过的地方，评分缺失只是高德没给（实测**夫子庙就没有**）。
+    拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
+
+    代价是那个节点的几行逻辑在我们这边留了一份副本：所以这里既钉「池子豁免」，
+    也钉「高德那部分照旧被滤」——只钉一半，副本就可能在另一半点上悄悄走偏。
     """
 
-    @pytest.mark.asyncio
-    async def test_the_pool_comes_first(self) -> None:
-        pool = [CandidatePoi(poi_id="B_1", name="网友写过的地方", lat_gcj02=32.0, lng_gcj02=118.8)]
-        asked: list[str] = []
+    def test_a_pool_entry_without_a_rating_survives(self) -> None:
+        """夫子庙：高德对它根本没有评分，但网友写过，所以它要活下来。"""
+        result = _PoolNode(
+            pool=[_pool_poi("夫子庙")],
+            amap=[
+                {"name": "夫子庙", "rating": None},
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "某个广场", "rating": 3.5},
+            ],
+        ).run()
 
-        async def original(city: str, api_key: str, *, max_spots: int = 30):
-            asked.append(city)
-            return [{"name": "高德搜到的", "location": {"lng": 118.8, "lat": 32.0}}]
+        assert [spot["name"] for spot in result["pois"]] == ["夫子庙", "中山陵景区"]
 
-        from third_party.floattrip.planning import nodes
+    def test_amap_spots_are_still_filtered(self) -> None:
+        """高德那部分照旧受管——不然这道门禁就等于拆了。"""
+        result = _PoolNode(
+            pool=[],
+            amap=[
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "某个广场", "rating": 3.5},
+                {"name": "没评分的广场", "rating": None},
+            ],
+        ).run()
 
-        before = nodes.fetch_city_spots_async
-        try:
-            pool_search._state["original"] = original
-            nodes.fetch_city_spots_async = pool_search._pool_first(original, lambda _c: pool)
-            spots = await nodes.fetch_city_spots_async("南京", "key", max_spots=10)
-        finally:
-            nodes.fetch_city_spots_async = before
+        assert [spot["name"] for spot in result["pois"]] == ["中山陵景区"]
 
-        assert [spot["name"] for spot in spots] == ["网友写过的地方", "高德搜到的"]
-        assert asked == ["南京"]
+    def test_the_pool_comes_first(self) -> None:
+        result = _PoolNode(
+            pool=[_pool_poi("老门东")],
+            amap=[
+                {"name": "中山陵景区", "rating": 4.9},
+                {"name": "老门东", "rating": 4.8},
+            ],
+        ).run()
 
-    @pytest.mark.asyncio
-    async def test_a_full_pool_does_not_even_ask_amap(self) -> None:
-        pool = [
-            CandidatePoi(poi_id=f"B_{i}", name=f"地方{i}", lat_gcj02=32.0, lng_gcj02=118.8)
-            for i in range(5)
-        ]
-        asked: list[str] = []
+        assert [spot["name"] for spot in result["pois"]] == ["老门东", "中山陵景区"]
 
-        async def original(city: str, api_key: str, *, max_spots: int = 30):
-            asked.append(city)
-            return [{"name": "不该出现", "location": {"lng": 118.8, "lat": 32.0}}]
+    def test_a_place_is_not_listed_twice(self) -> None:
+        """池子里的地方大多也搜得到：不同来源的同名条目只留池子那一份。"""
+        result = _PoolNode(
+            pool=[_pool_poi("夫子庙")],
+            amap=[{"name": "夫子庙", "rating": 4.8}],
+        ).run()
 
-        from third_party.floattrip.planning import nodes
+        assert [spot["name"] for spot in result["pois"]] == ["夫子庙"]
 
-        before = nodes.fetch_city_spots_async
-        try:
-            nodes.fetch_city_spots_async = pool_search._pool_first(original, lambda _c: pool)
-            spots = await nodes.fetch_city_spots_async("南京", "key", max_spots=5)
-        finally:
-            nodes.fetch_city_spots_async = before
+    def test_a_full_pool_still_asks_amap(self) -> None:
+        """池子满不等于不用问高德——**行程的备选要够多**，而池子只有几个。
 
-        assert len(spots) == 5
-        assert asked == [], "池子已经够数，不该再打高德"
+        这一条与上一版不同：那时「池子够数就不打高德」是省一次请求；
+        现在池子与高德是**分开编号**的，高德那部分再多也要补齐（它只是
+        排在池子后面、且要过评分门禁）。
+        """
+        node = _PoolNode(
+            pool=[_pool_poi("老门东")],
+            amap=[{"name": "中山陵景区", "rating": 4.9}],
+        )
 
-    @pytest.mark.asyncio
-    async def test_the_same_place_is_not_listed_twice(self) -> None:
-        """池子里的地方大多也搜得到——不去重就会一份清单里出现两遍。"""
-        pool = [CandidatePoi(poi_id="B_1", name="夫子庙", lat_gcj02=32.0, lng_gcj02=118.8)]
+        result = node.run()
 
-        async def original(city: str, api_key: str, *, max_spots: int = 30):
-            return [
-                {"name": "夫子庙", "location": {"lng": 118.8, "lat": 32.0}},
-                {"name": "老门东", "location": {"lng": 118.79, "lat": 32.01}},
-            ]
+        assert node.asked == ["南京"]
+        assert [spot["name"] for spot in result["pois"]] == ["老门东", "中山陵景区"]
 
-        from third_party.floattrip.planning import nodes
+    def test_the_history_note_says_what_happened(self) -> None:
+        """阶段日志里要能看出「池子几个、高德几个、滤掉几个」。"""
+        result = _PoolNode(
+            pool=[_pool_poi("夫子庙")],
+            amap=[
+                {"name": "夫子庙", "rating": None},
+                {"name": "某个广场", "rating": 3.5},
+            ],
+        ).run()
 
-        before = nodes.fetch_city_spots_async
-        try:
-            nodes.fetch_city_spots_async = pool_search._pool_first(original, lambda _c: pool)
-            spots = await nodes.fetch_city_spots_async("南京", "key", max_spots=10)
-        finally:
-            nodes.fetch_city_spots_async = before
-
-        assert [spot["name"] for spot in spots] == ["夫子庙", "老门东"]
+        note = result["history"][-1]
+        assert "候选池 1 个" in note
+        assert "不受评分门禁管" in note
+        assert "滤掉 1" in note
 
 
 class TestInstall:
     def test_no_provider_means_the_original(self) -> None:
         """池子没覆盖的城市原样走原路——不能因为接了这个而少掉什么。"""
-        from third_party.floattrip.planning import nodes
+        from third_party.floattrip.planning import graph, nodes
 
         pool_search.install(None)
 
-        assert nodes.fetch_city_spots_async is pool_search._state["original"]
+        assert nodes.attraction_search_node is pool_search._state["original_node"]
+        assert graph.attraction_search_node is pool_search._state["original_graph_node"]
 
-    def test_the_state_does_not_leak_between_plans(self) -> None:
-        """上一次带池子、这一次不带，必须真的不带。
+    def test_the_graph_gets_the_replaced_node_too(self) -> None:
+        """`graph.py` 自己持有一份引用（模块级 import），不换它等于没换。
 
-        替换是全局的（改的是模块属性），靠「调用方记得卸下」迟早会漏。
+        这一条是**真机撞出来的**：图是在函数里现搭的，用的是
+        `graph.attraction_search_node`，只换 `nodes` 上那个不起作用。
         """
-        from third_party.floattrip.planning import nodes
+        from third_party.floattrip.planning import graph, nodes
 
         pool_search.install(lambda _city: [])
-        assert nodes.fetch_city_spots_async is not pool_search._state["original"]
 
+        assert nodes.attraction_search_node is graph.attraction_search_node
+        assert nodes.attraction_search_node is not pool_search._state["original_node"]
+
+    def test_the_state_does_not_leak_between_plans(self) -> None:
+        """上一次带池子、这一次不带，必须真的不带。"""
+        from third_party.floattrip.planning import graph, nodes
+
+        pool_search.install(lambda _city: [])
         pool_search.install(None)
 
-        assert nodes.fetch_city_spots_async is pool_search._state["original"]
+        assert nodes.attraction_search_node is pool_search._state["original_node"]
+        assert graph.attraction_search_node is pool_search._state["original_graph_node"]
 
     def test_installing_twice_keeps_the_original(self) -> None:
-        """反复装不能把原函数包成「池子 → 池子 → 高德」。"""
+        """反复装不能把原节点包成「池子 → 池子 → 高德」。"""
         from third_party.floattrip.planning import nodes
 
         provider = lambda _city: []  # noqa: E731
@@ -436,4 +560,4 @@ class TestInstall:
         pool_search.install(provider)
 
         assert pool_search._state["original"] is first
-        assert nodes.fetch_city_spots_async is not first
+        assert nodes.attraction_search_node is not pool_search._state["original_node"]

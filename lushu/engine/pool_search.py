@@ -81,55 +81,81 @@ def to_spot(poi: CandidatePoi) -> dict[str, Any] | None:
     }
 
 
-def _pool_first(original, provider: SpotProvider):
-    """把「池子优先、高德补全」包成原函数的样子。"""
-
-    async def fetch_city_spots_async(
-        city: str, api_key: str, *, max_spots: int = 30
-    ) -> list[dict[str, Any]]:
-        spots: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        for poi in provider(city or ""):
-            if len(spots) >= max_spots:
-                break
-            spot = to_spot(poi)
-            if spot is None or not spot.get("name") or spot["name"] in seen:
-                continue
-            seen.add(spot["name"])
-            spots.append(spot)
-
-        if len(spots) < max_spots:
-            # 池子不够才问高德。补进来的同样要过一遍去重——
-            # 池子里的地方大多也是高德搜得到的，不去重就会一份清单里出现两遍。
-            for spot in await original(city, api_key, max_spots=max_spots):
-                if len(spots) >= max_spots:
-                    break
-                name = spot.get("name") or ""
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                spots.append(spot)
-
-        return spots
-
-    return fetch_city_spots_async
-
-
 def install(provider: SpotProvider | None) -> None:
     """装上（或卸下）候选池优先的景点搜索。
 
     每次规划都调一次，`provider=None` 表示恢复原样——**状态由调用方每次显式
     设定**，不在两次规划之间残留。否则「上一次带池子、这一次不带」这种情形
     会拿到上一次的行为，而它没有任何地方看得出来。
+
+    换的只有**一个函数**：那个节点。它自己调池子、自己调高德、自己决定
+    谁受评分门禁管——两件事都在一处，就不会出现「搜索换了、门禁没换」
+    这种一半的状态。
     """
-    from third_party.floattrip.planning import nodes
+    from third_party.floattrip.planning import graph, nodes
 
     if _state["original"] is None:
         _state["original"] = nodes.fetch_city_spots_async
+        _state["original_node"] = nodes.attraction_search_node
+        _state["original_graph_node"] = graph.attraction_search_node
 
-    nodes.fetch_city_spots_async = (
-        _pool_first(_state["original"], provider)
-        if provider is not None
-        else _state["original"]
+    node = (
+        _pool_exempt_node(provider) if provider is not None else _state["original_node"]
     )
+    nodes.attraction_search_node = node
+    # `graph.py` 在模块级 `from ...nodes import attraction_search_node`，
+    # 于是它自己持有一份引用——图是在函数里现搭的，所以这一份也得换。
+    graph.attraction_search_node = node
+
+
+# 引擎那个节点做的事（抓清单 → 滤评分 → 记日志），改了两处：
+#
+# 1. **清单里池子在前**。设计 5.1：「候选池以攻略知识库为主、高德搜索补全」。
+# 2. **池子条目不受评分门禁管**。那道门禁的意图是滤掉高德搜出来的噪声
+#    （评分缺失的往往是个广场、停车场、上车点），而池子里的地方不是
+#    「高德搜出来的」——它们是网友真的写过的地方，评分缺失只是高德没给
+#    （实测夫子庙就没有）。拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
+#
+# 为什么连节点一起换、而不是只换搜索函数：门禁在节点里，而 **`graph.py` 对
+# 节点另有一份模块级绑定**。只换搜索函数的话，池子条目进得了清单、过不了门禁
+# ——真机跑出来就是这样（夫子庙被丢掉，排程选了高德的同名变体顶上，而那一个
+# 身上没有任何网友结论）。
+#
+# 代价是这个节点的几行逻辑在我们这边有一份副本。上游固定在 ADR-0005 记的
+# 那个提交上，不会自主变化；真变化了，`tests/test_pool_search.py` 会红着提醒。
+def _pool_exempt_node(provider: SpotProvider):
+    """与引擎那个节点同一套逻辑，池子在前、且不受评分门禁管。"""
+
+    async def attraction_search_node(state):
+        from third_party.floattrip.planning.helpers import amap_key, filter_by_rating
+
+        city = state.destination or ""
+
+        # 池子自己转，不走搜索函数：这样「哪些是池子里的」不需要靠名字去猜，
+        # 也就不必把 provider 调两遍。
+        from_pool: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for poi in provider(city):
+            if len(from_pool) >= state.max_spots:
+                break
+            spot = to_spot(poi)
+            name = (spot or {}).get("name") or ""
+            if spot is None or not name or name in seen:
+                continue
+            seen.add(name)
+            from_pool.append(spot)
+
+        found = await _state["original"](city, amap_key(), max_spots=state.max_spots)
+        # 池子里的地方大多也搜得到：不同来源的同名条目只留池子那一份
+        fresh = [spot for spot in found if (spot.get("name") or "") not in seen]
+        kept, dropped = filter_by_rating(fresh, state.min_rating)
+
+        spots = (from_pool + kept)[: state.max_spots]
+        note = (
+            f"景点搜索：候选池 {len(from_pool)} 个（不受评分门禁管）"
+            f" + 高德 {len(fresh)} 个（rating≥{state.min_rating} 保留 {len(kept)}，"
+            f"滤掉 {len(dropped)}）= {len(spots)} 个"
+        )
+        return {"pois": spots, "history": state.history + [note]}
+
+    return attraction_search_node

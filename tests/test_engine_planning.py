@@ -81,11 +81,11 @@ class TestSpotSourceWiring:
         from third_party.floattrip.planning import graph as engine_graph
         from third_party.floattrip.planning import nodes
 
-        seen: list[object] = []
+        seen: list[tuple[object, object]] = []
 
         async def fake(query: str, **overrides: Any):
-            # 引擎开始跑的那一刻，搜索函数应当已经被换掉
-            seen.append(nodes.fetch_city_spots_async)
+            # 引擎开始跑的那一刻，节点应当已经被换掉——**两处绑定都要换**
+            seen.append((nodes.attraction_search_node, engine_graph.attraction_search_node))
             yield {"type": "result", "success": True, "plan": FAKE_PLAN}
 
         monkeypatch.setattr(engine_graph, "run_stream", fake)
@@ -94,9 +94,10 @@ class TestSpotSourceWiring:
             pass
 
         assert seen, "引擎没被跑到"
-        assert seen[0] is not pool_search._state["original"], (
-            "给了候选池，引擎却还是原来那个纯高德搜索——参数在哪一跳被漏掉了"
+        assert seen[0][0] is not pool_search._state["original_node"], (
+            "给了候选池，节点却还是原来那个——参数在哪一跳被漏掉了"
         )
+        assert seen[0][1] is seen[0][0], "graph 上那份引用没跟着换，图搭出来还是旧的"
 
     async def test_without_a_provider_the_engine_keeps_its_own(
         self, monkeypatch: pytest.MonkeyPatch
@@ -111,7 +112,7 @@ class TestSpotSourceWiring:
         seen: list[object] = []
 
         async def fake(query: str, **overrides: Any):
-            seen.append(nodes.fetch_city_spots_async)
+            seen.append(nodes.attraction_search_node)
             yield {"type": "result", "success": True, "plan": FAKE_PLAN}
 
         monkeypatch.setattr(engine_graph, "run_stream", fake)
@@ -119,7 +120,7 @@ class TestSpotSourceWiring:
         async for _ in stream_plan("去南京"):
             pass
 
-        assert seen[0] is pool_search._state["original"], "没给池子却换了搜索函数"
+        assert seen[0] is pool_search._state["original_node"], "没给池子却换了节点"
 
     async def test_the_planning_entry_passes_the_pool(
         self, monkeypatch: pytest.MonkeyPatch
