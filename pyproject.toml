@@ -42,8 +42,9 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-# third_party 是逐字拷贝的上游代码，不适用本项目的规范也不该被改写
-exclude = ["third_party", "web", ".venv", "data"]
+# third_party 是逐字拷贝的上游代码，不适用本项目的规范也不该被改写。
+# _raw 与 tools 是调研与一次性脚本的草稿区，同样不进 lint（它们不在版本库里）
+exclude = ["third_party", "web", ".venv", "data", "_raw", "tools"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

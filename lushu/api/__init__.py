@@ -4,6 +4,7 @@
 `tests/test_architecture_boundaries.py` 强制。
 """
 
+from .candidate_routes import router as candidate_router
 from .config_routes import router as config_router
 from .gold_routes import eval_router as eval_router
 from .gold_routes import router as gold_router
@@ -14,6 +15,7 @@ from .trip_routes import router as trip_router
 from .workbench_routes import router as workbench_router
 
 __all__ = [
+    "candidate_router",
     "config_router",
     "eval_router",
     "gold_router",
