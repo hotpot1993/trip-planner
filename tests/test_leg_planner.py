@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from lushu.adapters.route import RouteError, RoutePlan
+from lushu.domain.roadbook import leg_fingerprint
 from lushu.services import leg_planner as lp
 from lushu.services import roadbook_service as rs
 from lushu.store import connect, initialize, transaction
@@ -139,6 +140,30 @@ class TestPendingLegs:
         lp.apply_fixes(report.fixes, conn=connect(db))
 
         assert lp.pending_legs(conn=connect(db)) == []
+
+    def test_moving_the_item_to_another_entity_invalidates_the_leg(self, db: Path) -> None:
+        """**只记「通向哪一项」挡不住坐标变化。**
+
+        `ls align recheck` 会把天项挪到另一个实体上（`UPDATE day_item SET poi_id`），
+        坐标随之改变而 id 没变。那时旧路段还在，只是已经不是这两个地方之间的
+        距离了——**一条错的距离，在路书上看起来和一个对的一模一样**。
+        """
+        _trip(db, ("夫子庙", "09:00", 32.0209, 118.7886), ("老门东", "14:00", 32.0116, 118.7876))
+        report = lp.plan_legs(lp.pending_legs(conn=connect(db)), walk=lambda _s: _plan(), pause=0)
+        lp.apply_fixes(report.fixes, conn=connect(db))
+        assert lp.pending_legs(conn=connect(db)) == []
+
+        # 对齐把「老门东」挪到了另一个实体上：换个 poi_id，坐标也就换了
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, typecode, "
+                "lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                "('B_elsewhere', '老门东景区', '320100', '320104', '110201', 32.0500, 118.8000, ?)",
+                (NOW,),
+            )
+            conn.execute("UPDATE day_item SET poi_id = 'B_elsewhere' WHERE id = 'di_1'")
+
+        assert len(lp.pending_legs(conn=connect(db))) == 1
 
     def test_changing_the_itinerary_invalidates_the_stored_leg(self, db: Path) -> None:
         """**自失效的键**：行程一改，旧路段就对不上，自动退回待办。
@@ -263,14 +288,21 @@ class TestApplyLegs:
 
         assert changed == [slot.from_item_id]
         row = connect(db).execute(
-            "SELECT leg_mode, leg_distance_m, leg_duration_min, leg_to_item_id FROM day_item "
+            "SELECT leg_mode, leg_distance_m, leg_duration_min, leg_key FROM day_item "
             "WHERE id = ?",
             (slot.from_item_id,),
         ).fetchone()
         assert row["leg_mode"] == "walk"
         assert row["leg_distance_m"] == 1420
         assert row["leg_duration_min"] == 17
-        assert row["leg_to_item_id"] == slot.to_item_id
+        # 指纹覆盖两端坐标与通向哪一项——这三样任何一样变了，路段就不再作数
+        assert row["leg_key"] == leg_fingerprint(
+            from_lat=slot.from_lat,
+            from_lng=slot.from_lng,
+            to_lat=slot.to_lat,
+            to_lng=slot.to_lng,
+            to_ref=slot.to_item_id,
+        )
 
     def test_unresolved_fixes_write_nothing(self, db: Path) -> None:
         slot = self._slot(db)

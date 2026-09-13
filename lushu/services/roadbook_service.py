@@ -32,6 +32,7 @@ from lushu.domain.roadbook import (
     RoadbookDay,
     RoadbookItem,
     RoadbookLeg,
+    leg_fingerprint,
 )
 from lushu.services import knowledge_store as ks
 from lushu.store.connection import connect
@@ -120,19 +121,29 @@ def _stored_leg(
 ) -> RoadbookLeg | None:
     """天项上存着的**真实**路段；没有或已经失效就返回 None（退回估算）。
 
-    `leg_to_item_id` 是自失效的键：它记下这条路段通向哪一项。行程一改
-    （插入、删除、重排），键就对不上，这里自然退回估算——不需要任何
-    「行程变了要清缓存」的额外记账，那种记账迟早会漏。
+    有效性由**指纹**判定：两端坐标加上通向哪一项。距离只由两端坐标决定，
+    键覆盖全部依赖，就没有悄悄过期的余地——行程重排会变，对齐把天项挪到
+    另一个实体上（坐标变了而 id 没变）也会变。原先只记「通向哪一项」，
+    挡得住前者挡不住后者，而后者留下的是**一条错的距离**，在路书上看起来
+    和一个对的一模一样。
 
     坐标用传进来的 `_Point` 而不是天项那两列：历史行程的景点坐标在 `poi`
     表里（迁移 10 才让天项自己记），直接用列会拼出一条坐标是 None 的导航链接。
+    **读的时候与写的时候取的必须是同一份坐标**，否则指纹每次都对不上，
+    路段会永远退回待办（那样倒也不会出错，只是白查）。
 
     真实路段**不带「估算」那句提醒**：那句话是给估算用的，挂在真数据上
     会让用户以为连这个也不准。
     """
-    if current["leg_to_item_id"] != following["id"] or not current["leg_mode"]:
+    if not current["leg_mode"] or not (left.located and right.located):
         return None
-    if not (left.located and right.located):
+    if current["leg_key"] != leg_fingerprint(
+        from_lat=left.lat,
+        from_lng=left.lng,
+        to_lat=right.lat,
+        to_lng=right.lng,
+        to_ref=following["id"],
+    ):
         return None
     mode = current["leg_mode"]
     return RoadbookLeg(

@@ -167,6 +167,23 @@ def _minutes(value: str | None) -> int | None:
     return int(head) * 60 + int(tail)
 
 
+def leg_fingerprint(
+    *, from_lat: float, from_lng: float, to_lat: float, to_lng: float, to_ref: str
+) -> str:
+    """一条路段是**在什么之上**算出来的。
+
+    存下来的真实距离要能自证没过期。键必须覆盖**它依赖的全部东西**，
+    而那正好是两端坐标：距离、耗时、交通方式都只由它们决定。
+
+    只记「通向哪一项」是不够的——那一项的坐标可能换过（`ls align recheck`
+    把天项挪到另一个实体上，坐标就变了），而 id 没变。**键不覆盖的东西，
+    就是会悄悄过期的东西**，而这里悄悄过期的后果是路书上一个错的距离。
+
+    取五位小数（约 1 米）：真实的坐标变动一定能让它变，浮点格式的抖动不会。
+    """
+    return f"{from_lat:.5f},{from_lng:.5f}->{to_lat:.5f},{to_lng:.5f}|{to_ref}"
+
+
 def _coordinates(roadbook: Roadbook) -> dict[str, list[tuple[str, float, float]]]:
     """按城市归拢带坐标的天项，键是城市名。
 

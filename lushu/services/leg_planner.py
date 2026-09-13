@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from lushu.adapters.route import RouteError, RoutePlan
 from lushu.domain.geo import distance_m
+from lushu.domain.roadbook import leg_fingerprint
 from lushu.services.roadbook_service import WALK_LIMIT_M, item_sort_key
 from lushu.store.connection import connect
 
@@ -96,7 +97,7 @@ def pending_legs(
     try:
         rows = active.execute(
             "SELECT i.id, i.day_id, i.seq, i.start_time, i.end_time, i.title, i.kind, "
-            "       i.leg_mode, i.leg_distance_m, i.leg_duration_min, i.leg_to_item_id, "
+            "       i.leg_mode, i.leg_distance_m, i.leg_duration_min, i.leg_key, "
             "       d.date, d.trip_id, "
             "       COALESCE(p.lat_gcj02, i.lat_gcj02) AS lat, "
             "       COALESCE(p.lng_gcj02, i.lng_gcj02) AS lng "
@@ -119,11 +120,19 @@ def pending_legs(
     for day_rows in by_day.values():
         ordered = sorted(day_rows, key=item_sort_key)
         for current, following in zip(ordered, ordered[1:], strict=False):
-            if following["id"] == current["leg_to_item_id"] and current["leg_mode"]:
-                continue  # 已经有有效路段
             if current["lat"] is None or current["lng"] is None:
                 continue
             if following["lat"] is None or following["lng"] is None:
+                continue
+            # 已经有**有效**路段就跳过。指纹覆盖两端坐标，所以坐标换过
+            # （对齐把天项挪到别的实体上）也会自动退回待办。
+            if current["leg_mode"] and current["leg_key"] == leg_fingerprint(
+                from_lat=current["lat"],
+                from_lng=current["lng"],
+                to_lat=following["lat"],
+                to_lng=following["lng"],
+                to_ref=following["id"],
+            ):
                 continue
             found.append(
                 LegSlot(
@@ -203,12 +212,18 @@ def apply_fixes(fixes: Sequence[LegFix], *, conn: sqlite3.Connection | None = No
                 continue
             active.execute(
                 "UPDATE day_item SET leg_mode = ?, leg_distance_m = ?, leg_duration_min = ?, "
-                "leg_to_item_id = ? WHERE id = ?",
+                "leg_key = ? WHERE id = ?",
                 (
                     fix.plan.mode,
                     fix.plan.distance_m,
                     fix.plan.duration_min,
-                    fix.slot.to_item_id,
+                    leg_fingerprint(
+                        from_lat=fix.slot.from_lat,
+                        from_lng=fix.slot.from_lng,
+                        to_lat=fix.slot.to_lat,
+                        to_lng=fix.slot.to_lng,
+                        to_ref=fix.slot.to_item_id,
+                    ),
                     fix.slot.from_item_id,
                 ),
             )

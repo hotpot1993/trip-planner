@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -560,6 +560,22 @@ ALTER TABLE day_item ADD COLUMN leg_duration_min INTEGER;
 ALTER TABLE day_item ADD COLUMN leg_to_item_id TEXT;
 """
 
+# ─── 12：路段的键要覆盖两端坐标 ─────────────────────────────────
+#
+# 11 用的键是「通向哪一项」。它挡住了行程重排，**挡不住坐标变化**：
+# `ls align recheck` 会把天项挪到另一个实体上（`UPDATE day_item SET poi_id`），
+# 坐标随之改变而 id 没变，于是那段存下来的距离还在，只是已经不是这
+# 两个地方之间的距离了——一条错的距离，在路书上看起来和一个对的一模一样。
+#
+# 所以键换成**指纹**：两端的坐标加上通向哪一项。距离只由两端坐标决定，
+# 键覆盖全部依赖，就没有「悄悄过期」的余地。
+#
+# `leg_to_item_id` 由 `leg_key` 完全包含（指纹尾巴上就是它），删掉不留死列。
+_MIGRATION_12 = """
+ALTER TABLE day_item ADD COLUMN leg_key TEXT;
+ALTER TABLE day_item DROP COLUMN leg_to_item_id;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -572,6 +588,7 @@ _MIGRATIONS: dict[int, str] = {
     9: _MIGRATION_9,
     10: _MIGRATION_10,
     11: _MIGRATION_11,
+    12: _MIGRATION_12,
 }
 
 
