@@ -24,6 +24,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field, replace
 
+from lushu.adapters.poi import PoiSearchError
 from lushu.domain.knowledge import Confidence, Polarity
 from lushu.domain.poi import CandidatePoi
 from lushu.services import knowledge_store as ks
@@ -91,8 +92,9 @@ class CityPool:
 
     city_adcode: str
     candidates: list[Candidate] = field(default_factory=list)
-    # 高德补全失败的原因。补全只是加分项，失败不该让整个池子报错，
-    # 但也不能静默——用户看到的候选少了，得知道为什么。
+    # 回落到高德搜索失败的原因。**只在「知识库没有这座城市」那条路上会被设置**
+    # （`fill_gaps` 那条补全路径目前没有调用方）。回落失败不该让整页报错，
+    # 但也不能静默：用户看到的是一片空池子，得知道那不是「这城市没什么可去的」。
     amap_error: str | None = None
 
     @property
@@ -424,13 +426,27 @@ def amap_fallback(
 
 def _live_search():
     """真实的高德搜索。**在服务层里 import 适配器**——接口层不许碰 adapters
-    （架构边界测试会拦，实测拦过一次）。"""
+    （架构边界测试会拦，实测拦过一次）。
+
+    要包一层：`search_pois` 的第二个参数是**关键字**（`city=`），而 `amap_fallback`
+    按位置传 `(关键词, 城市)`。**原先这里直接把函数返回了**，于是调用时是一个
+    TypeError，被 `pool_for_city` 的宽 catch 收进 `amap_error`——界面上写着
+    「高德补全没成功：TypeError: search_pois() takes 1 positional argument but
+    2 were given」，把我们的接错线说成了高德的失败。后果是**「知识库没覆盖的
+    城市直接搜高德」这条路从来没工作过**（设计 5.1），而表现出来只是少了几条
+    候选加一句没人细看的小字。
+
+    别处四处（`booking_store`、`meal_coords`、`pipeline`、`realign`）都是这个
+    包法；只有这里漏了，因为只有这里把它当成「原样传下去的函数」而不是
+    「一个 (关键词, 城市) 形状的回调」。
+    """
     from lushu.adapters.poi import search_pois
 
-    return search_pois
+    return lambda keywords, city: search_pois(keywords, city=city)
 
 
 def _live_fetch():
+    """`fetch_poi(poi_id, ...)` 的第一个参数就是 id，按位置传没问题。"""
     from lushu.adapters.poi import fetch_poi
 
     return fetch_poi
@@ -470,6 +486,10 @@ def pool_for_city(
     searcher = search or _live_search()
     try:
         pool.candidates = amap_fallback(city_name, search=searcher, limit=limit)
-    except Exception as exc:  # noqa: BLE001 - 补全失败不该让整页报错
+    except PoiSearchError as exc:
+        # **只接 PoiSearchError。** 高德挂了不该让整页报错，但我们自己的接线
+        # 错误必须炸出来——原先这里接的是 Exception，于是一个签名不匹配的
+        # TypeError 被显示成「高德补全没成功」，那条路坏了一整轮都没人发现。
+        # 这与 `pipeline._fetch_from_db`、`meal_coords` 是同一条规矩。
         pool.amap_error = f"{type(exc).__name__}: {exc}"
     return pool

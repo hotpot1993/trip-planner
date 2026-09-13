@@ -66,10 +66,16 @@ class CityForecast:
 
     多城市行程里，天气必须按城市分开呈现——「北京下雨」和「西安下雨」
     对行程安排的含义完全不同。
+
+    **`source` 为 `None` 是「两个来源都没取到」，不是「数据来自某个源」。**
+    原先这里在都没取到时也填 `WeatherSource.AMAP`，于是界面上写着「来源 高德」
+    配一片空白——`note` 明明说的是「高德也没有返回这个区间的预报」。
+    空预报配一个假的来源名，正是「算不出 ≠ 0」那一类错：读的人会以为
+    「高德查过了，那几天没数据」，而事实是谁都没查到。
     """
 
     city_name: str
-    source: WeatherSource
+    source: WeatherSource | None = None
     days: tuple[DailyWeather, ...] = ()
     note: str | None = None
 

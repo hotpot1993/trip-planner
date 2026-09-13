@@ -158,7 +158,12 @@ class TestAmapFallback:
             lat_gcj02=24.88,
         )
 
-        def fake_search(keywords: str, city: str) -> PoiSearchResult:
+        # 桩照抄真适配器的形状：`city` 是**关键字**参数
+        # （`search_pois(keywords, *, city, limit, api_key, client)`）。
+        # 原先这个桩写成 `(keywords, city)` 两个都能按位置收，于是它在
+        # `_live_search` 接错线时也照样通过——一条走过整条真路径的测试，
+        # 却量不出那条路径断了。
+        def fake_search(keywords: str, *, city: str) -> PoiSearchResult:
             return PoiSearchResult(
                 candidates=(found,), query=keywords, city=city, raw_count=1
             )

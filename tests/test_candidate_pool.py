@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from lushu.adapters.poi import PoiSearchError
 from lushu.domain.knowledge import ClaimEvidence
 from lushu.services import candidate_pool as cp
 from lushu.services import knowledge_store as ks
@@ -342,16 +343,62 @@ class TestAmapFallback:
         assert all(item.source == cp.PoolSource.KNOWLEDGE for item in pool.candidates)
 
     def test_amap_failure_is_reported_not_raised(self, db: Path) -> None:
-        """补全只是加分项，失败不该让整页报错，但也不能静默。"""
+        """补全只是加分项，失败不该让整页报错，但也不能静默。
+
+        桩抛的是**真适配器会抛的那一种**：`_get_payload` 把连接错误、HTTP 错误、
+        非法 JSON、缺 key 全部包成 `PoiSearchError`。原先这个桩抛的是
+        `RuntimeError`，于是它顺手盖住了一件事——`pool_for_city` 当时接的是
+        `Exception`，我们自己的接线错误也会被显示成「高德补全没成功」。
+        """
         _city(db, "530100", "昆明")
 
         def boom(keywords: str, city: str):
-            raise RuntimeError("高德不可用")
+            raise PoiSearchError("高德 POI 搜索请求失败：ConnectError")
 
         pool = cp.pool_for_city("530100", city_name="昆明", conn=connect(db), search=boom)
         assert pool.candidates == []
         assert pool.amap_error is not None
-        assert "高德不可用" in pool.amap_error
+        assert "ConnectError" in pool.amap_error
+
+    def test_our_own_bug_is_not_reported_as_an_amap_failure(self, db: Path) -> None:
+        """回调签名接错了是我们的事，必须炸出来，不能算成高德的失败。
+
+        这不是假想的错：`_live_search()` 原先直接把 `search_pois` 返回，而
+        `amap_fallback` 按位置传两个参数，于是那条路每次调用都是一个
+        `TypeError`，被宽 catch 收成一句「高德补全没成功：TypeError…」。
+        「知识库没覆盖的城市直接搜高德」（设计 5.1）**从来没有工作过**，
+        而界面上只是少了几条候选。
+        """
+        _city(db, "530100", "昆明")
+
+        def wrong_shape(keywords: str, city: str, extra: str):
+            raise AssertionError("不该走到这里")
+
+        with pytest.raises(TypeError):
+            cp.pool_for_city("530100", city_name="昆明", conn=connect(db), search=wrong_shape)
+
+    def test_live_search_matches_the_call_shape(self, monkeypatch) -> None:
+        """`_live_search()` 返回的东西必须能按 `(关键词, 城市)` 调用。
+
+        真适配器的城市是关键字参数（`search_pois(keywords, *, city, ...)`），
+        所以桩也照这个样子定义——用它才能量出接线对不对。别处四处
+        （booking_store / meal_coords / pipeline / realign）都是
+        `lambda keywords, city: search_pois(keywords, city=city)`，
+        只有候选池这条漏了。
+        """
+        seen: dict[str, str] = {}
+
+        def fake_search_pois(keywords: str, *, city: str, **kwargs: object):
+            seen["keywords"] = keywords
+            seen["city"] = city
+            return "搜索结果"
+
+        monkeypatch.setattr("lushu.adapters.poi.search_pois", fake_search_pois)
+
+        searcher = cp._live_search()
+
+        assert searcher("景点", "昆明") == "搜索结果"
+        assert seen == {"keywords": "景点", "city": "昆明"}
 
     def test_no_search_and_no_data_gives_an_empty_pool(self, db: Path) -> None:
         _city(db, "530100", "昆明")

@@ -128,6 +128,45 @@ async def test_both_sources_empty_yields_an_empty_forecast_with_a_note(stub_sour
 
     assert forecast.days == ()
     assert forecast.note
+    # **没有数据就没有来源。** 这条断言原先不在，于是这个分支一直把 source
+    # 填成高德：界面上是一句「来源 高德」配一片空白，而 note 明明写着
+    # 「高德也没有返回这个区间的预报」。读的人会以为高德查过了、那几天就是
+    # 没数据，而事实是谁都没查到。
+    assert forecast.source is None
+
+
+@pytest.mark.asyncio
+async def test_a_city_without_coordinates_and_no_amap_data_has_no_source(
+    stub_sources,
+) -> None:
+    """没有坐标、高德又没数据时同样没有来源，不能借「高德」当替身。"""
+    _calls, state = stub_sources
+    state["amap"] = []
+
+    forecast = await weather_service.forecast_for_city(NO_COORDS, START, END, today=TODAY)
+
+    assert forecast.source is None
+    assert forecast.days == ()
+    assert forecast.note is not None and "还没有坐标" in forecast.note
+
+
+@pytest.mark.asyncio
+async def test_a_clipped_away_amap_forecast_has_no_source(stub_sources) -> None:
+    """高德有数据、但全在行程区间之外，裁剪之后也是空的——同样没有来源。
+
+    `_clip` 之后为空的这一支最容易漏：解析是有数据的，只是不覆盖这几天。
+    """
+    _calls, state = stub_sources
+    state["open_meteo"] = []
+    state["amap"] = [
+        DailyWeather(day=START - timedelta(days=5), text="晴"),
+        DailyWeather(day=END + timedelta(days=5), text="晴"),
+    ]
+
+    forecast = await weather_service.forecast_for_city(NANJING, START, END, today=TODAY)
+
+    assert forecast.source is None
+    assert forecast.days == ()
 
 
 @pytest.mark.asyncio

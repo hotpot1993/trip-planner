@@ -93,6 +93,36 @@ class TestFold:
         rejoined = folded.replace("\r\n ", "")
         assert rejoined == line
 
+    def test_folding_a_multi_line_block_is_rejected(self) -> None:
+        """折行是按**逻辑行**做的，整块含换行的文本必须当场炸。
+
+        原先 `build_calendar` 把整个时区块当成 `raw` 里的**一项**交给 `fold`，
+        于是那九行被当成一个逻辑行，在累计第 75 字节处硬切：
+
+            DTSTART:19700101T00000
+             0
+            ...
+            END:VTI
+             MEZONE
+
+        一份这样的 .ics 是坏的，而客户端对它**静默不认**——不报错，只是事件
+        不出现。日历是唯一把预约提醒送到手机上的通道，所以这个错的表现是
+        「提醒从来没到过」，而服务端一点异常都看不到。
+        """
+        with pytest.raises(ValueError, match="逻辑行"):
+            ics.fold("BEGIN:VTIMEZONE\r\nTZID:Asia/Shanghai\r\nEND:VTIMEZONE")
+
+
+def _unfold(text: str) -> list[str]:
+    """把折好的 .ics 展开回逻辑行（续行以空格开头）。"""
+    lines: list[str] = []
+    for line in text.split("\r\n"):
+        if line.startswith(" ") and lines:
+            lines[-1] += line[1:]
+        elif line:
+            lines.append(line)
+    return lines
+
 
 class TestBuildCalendar:
     def test_crlf_line_endings(self) -> None:
@@ -112,6 +142,47 @@ class TestBuildCalendar:
             "END:VCALENDAR",
         ):
             assert required in text
+
+    def test_the_timezone_block_survives_whole(self) -> None:
+        """时区块必须原样出现在产物里，一行都不能被切开。
+
+        **上一版这里漏得刚好：** `END:VTIMEZONE` 不在上面那个必需清单里，
+        而被切坏的第一处正好落在 `DTSTART:19700101T000000` 的中间、第二处
+        落在 `END:VTIMEZONE` 的中间。清单里留下的几个字符串都在切点之前，
+        于是测试全绿，产物却是坏的。
+        """
+        text, _ = ics.build_calendar([])
+        lines = _unfold(text)
+
+        for line in ics._VTIMEZONE_LINES:
+            assert line in lines, f"时区块这一行不在产物里：{line}"
+
+    def test_no_structural_line_is_pushed_onto_a_continuation(self) -> None:
+        """续行只能是长值折出来的，不能是结构行的一部分。
+
+        结构行的长度都是固定的短串；它们出现在续行里，就说明折行切错了位置。
+        """
+        text, _ = ics.build_calendar([_alert()])
+        continuations = [line for line in text.split("\r\n") if line.startswith(" ")]
+
+        for line in continuations:
+            assert not line[1:].startswith("TZOFFSET"), f"结构行被折了：{line!r}"
+            assert "END:VTI" not in line[1:], f"结构行被折了：{line!r}"
+
+    def test_every_octet_limit_holds(self) -> None:
+        """折行之后每一行的字节数都不超过 75——中文按 UTF-8 算。"""
+        text, _ = ics.build_calendar([_alert()], trip_name="北京三日")
+        for line in text.split("\r\n"):
+            assert len(line.encode("utf-8")) <= ics.MAX_LINE_OCTETS
+
+    def test_unfolding_recovers_the_logical_lines(self) -> None:
+        """展开之后能拿回原始逻辑行，且描述那一段一个字节没丢。"""
+        text, _ = ics.build_calendar([_alert()], trip_name="北京三日")
+        lines = _unfold(text)
+        description = next(line for line in lines if line.startswith("DESCRIPTION:"))
+
+        assert description.endswith("以官方渠道为准。")
+        assert "故宫博物院观众服务" in description
 
     def test_event_carries_the_release_moment(self) -> None:
         text, _ = ics.build_calendar([_alert()], trip_name="北京三日")
@@ -152,11 +223,18 @@ class TestBuildCalendar:
 
         写成 00:00 等于凭空造了一个精度——用户会照着零点去等，
         而官方从没那么说过。
+
+        断言要**只看这个事件**：原先这里写的是「全文里不含 `T000000`」，
+        而它当时能通过，靠的正是时区块被折行切坏了——`DTSTART:19700101T000000`
+        被切成 `…T00000` 与 `0`，全文里于是真的没有这串。修好折行之后这句
+        立刻变红：一条测试靠另一个 bug 才通过，是这两处互相掩护的典型。
         """
         text, _ = ics.build_calendar([_alert(release_time=None)])
+        event = text.split("BEGIN:VEVENT")[1].split("END:VEVENT")[0]
+
         assert "DTSTART;VALUE=DATE:20260924" in text
         assert "DTEND;VALUE=DATE:20260925" in text
-        assert "T000000" not in text
+        assert "T000000" not in event, "事件本身不该出现时刻"
 
     def test_all_day_event_has_no_timed_alarm(self) -> None:
         text, _ = ics.build_calendar([_alert(release_time=None)])

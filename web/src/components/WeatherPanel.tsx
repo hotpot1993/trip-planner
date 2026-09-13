@@ -47,7 +47,12 @@ export function WeatherPanel({
             <div key={city.city_name}>
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className="font-display text-base">{city.city_name}</span>
-                <span className="text-xs text-ink-3">来源 {city.source_label}</span>
+                {/* 没取到预报时**不显示来源**：`source_label` 为 null。
+                    原先这里是「来源 高德」配一片空白——高德其实什么都没返回，
+                    那句话会让人以为查过了、那几天就是没数据。 */}
+                {city.source_label ? (
+                  <span className="text-xs text-ink-3">来源 {city.source_label}</span>
+                ) : null}
               </div>
 
               {city.days.length === 0 ? (

@@ -74,9 +74,12 @@ async def forecast_for_city(
             note=_join_notes(note, "高德只提供约 4 天预报"),
         )
 
+    # 两个来源都没给出这个区间的预报。**如实说没有来源**，不要填成高德：
+    # 填了的话界面上是一句「来源 高德」配一片空白，读的人会以为高德查过、
+    # 那几天就是没数据，而事实是谁都没查到。
     return CityForecast(
         city_name=city.name,
-        source=WeatherSource.AMAP,
+        source=None,
         days=(),
         note=_join_notes(note, amap_note or "高德也没有返回这个区间的预报"),
     )

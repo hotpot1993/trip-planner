@@ -37,19 +37,31 @@ EVENT_MINUTES = 15
 MAX_LINE_OCTETS = 75
 
 # 中国自 1991 年起不再使用夏令时，所以一个 STANDARD 块就够，
-# 不需要按年份列转换规则
-_VTIMEZONE = "\r\n".join(
-    [
-        "BEGIN:VTIMEZONE",
-        f"TZID:{TZID}",
-        "BEGIN:STANDARD",
-        "DTSTART:19700101T000000",
-        "TZOFFSETFROM:+0800",
-        "TZOFFSETTO:+0800",
-        "TZNAME:CST",
-        "END:STANDARD",
-        "END:VTIMEZONE",
-    ]
+# 不需要按年份列转换规则。
+#
+# **必须是「一行一项」的序列，不能先拼成一个含 \r\n 的整块。** 折行是按
+# 逻辑行做的，整块交给 `fold` 会被当成一个逻辑行，在累计第 75 字节处硬切
+# ——切出来的就是这个样子（真机实测，见 M7 的状态文档）：
+#
+#     DTSTART:19700101T00000
+#      0
+#     ...
+#     END:VTI
+#      MEZONE
+#
+# 一份这样的 .ics 是坏的，而按本模块开头那句话，客户端**静默不认**：
+# 不报错，只是事件不出现。日历是设计 6.2 里唯一把提醒送到手机上的通道，
+# 所以这个错等于提醒一直没送到，而这边一点异常都看不到。
+_VTIMEZONE_LINES: tuple[str, ...] = (
+    "BEGIN:VTIMEZONE",
+    f"TZID:{TZID}",
+    "BEGIN:STANDARD",
+    "DTSTART:19700101T000000",
+    "TZOFFSETFROM:+0800",
+    "TZOFFSETTO:+0800",
+    "TZNAME:CST",
+    "END:STANDARD",
+    "END:VTIMEZONE",
 )
 
 
@@ -69,7 +81,19 @@ def fold(line: str) -> str:
     中文字符是三字节，所以「75 个字符」是错的折法，会写出超长的行。
     折的时候要小心不要把一个多字节字符切成两半，所以按字符逐个累加、
     逐个判断字节数。
+
+    **只接受一个逻辑行。** 传进来一段含换行的文本会被当成一个逻辑行来折，
+    在第 75 字节处硬切——`.ics` 里那个切点会落在一行中间，把
+    `DTSTART:19700101T000000` 切成 `DTSTART:19700101T00000` 与 `0`。
+    这种事必须当场炸，不能"折出来看着也像那么回事"：客户端对坏掉的日历
+    是静默不认的，而这一头看不到任何异常。
     """
+    if "\r" in line or "\n" in line:
+        raise ValueError(
+            "fold 只处理一个逻辑行；含换行的文本要先拆成多行再逐行折"
+            "（折行是按行做的，整块折会在行中间切开）"
+        )
+
     encoded = line.encode("utf-8")
     if len(encoded) <= MAX_LINE_OCTETS:
         return line
@@ -239,14 +263,15 @@ def build_calendar(
         "METHOD:PUBLISH",
         f"X-WR-CALNAME:{escape(trip_name + ' 预约提醒' if trip_name else '预约提醒')}",
         f"X-WR-TIMEZONE:{TZID}",
-        _VTIMEZONE,
     ]
+    raw.extend(_VTIMEZONE_LINES)
     for event in events:
         raw.extend(event)
     raw.append("END:VCALENDAR")
 
     # 折行在最后统一做：先拼好逻辑行，再按字节折，免得在拼的过程中
-    # 把已经折好的行又拼回一行
+    # 把已经折好的行又拼回一行。**`raw` 里每一项都必须是一个逻辑行**——
+    # 多行的东西（比如时区块）要先 `extend` 进来，不能整块塞成一项。
     body = "\r\n".join(fold(line) for line in raw) + "\r\n"
     return body, skipped
 

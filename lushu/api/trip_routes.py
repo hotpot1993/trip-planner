@@ -161,8 +161,10 @@ class CityWeatherOut(BaseModel):
     """一座城市的预报。多城市行程里天气按城市分开呈现。"""
 
     city_name: str
-    source: str
-    source_label: str
+    # 两个来源都没取到预报时为 None——**没有数据就没有来源**，
+    # 不能让界面显示一个没给数据的来源名（原先就是那样：空预报配「来源 高德」）
+    source: str | None
+    source_label: str | None
     days: list[DayWeatherOut]
     note: str | None = None
 
@@ -522,8 +524,10 @@ async def trip_weather(trip_id: str) -> TripWeatherOut:
         cities=[
             CityWeatherOut(
                 city_name=forecast.city_name,
-                source=forecast.source.value,
-                source_label=forecast.source.label,
+                # 两个来源都没取到时是 None：界面据此不显示来源，而不是
+                # 显示一个没给数据的来源名
+                source=forecast.source.value if forecast.source else None,
+                source_label=forecast.source.label if forecast.source else None,
                 days=[
                     DayWeatherOut(
                         date=day.day,

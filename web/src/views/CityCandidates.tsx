@@ -81,8 +81,13 @@ export function CityCandidates({ adcode, name }: { adcode: string; name?: string
       </header>
 
       {pool.amap_error ? (
+        // 这句话原先写的是「高德补全没成功：…。缺坐标的地方在地图上暂时不可用。」
+        // ——两处都不对：`amap_error` 只在**回落搜索**失败时被设置（补全那条路
+        // 目前没有调用方），而且这种时候下面**一条候选都没有**，不是「缺坐标的
+        // 地方不可用」。说成「没查到」而不是「没有」，是这一页最要紧的区别。
         <p className="rounded border border-rule bg-paper-card px-4 py-3 text-xs text-ink-3">
-          高德补全没成功：{pool.amap_error}。缺坐标的地方在地图上暂时不可用。
+          这座城市还没有攻略数据，去高德搜也没成功：{pool.amap_error}。
+          所以下面没有候选——这跟「这里没什么可去的」不是一回事。
         </p>
       ) : null}
 

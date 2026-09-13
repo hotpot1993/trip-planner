@@ -129,8 +129,9 @@ export interface DayWeatherOut {
 
 export interface CityWeatherOut {
   city_name: string
-  source: string
-  source_label: string
+  /** 两个来源都没取到预报时为 null——没有数据就没有来源 */
+  source: string | null
+  source_label: string | null
   days: DayWeatherOut[]
   note: string | null
 }
