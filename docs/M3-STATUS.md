@@ -39,8 +39,12 @@ services/   ingest.py        导入、判重、第一层归组
 
 api/        workbench_routes.py  工作台的读写接口
             gold_routes.py       标注队列与评测结果
+            pipeline_routes.py   导入与管线（SSE 报进度）
 cli.py      ingest / extract / group / align / pipeline / eval
 ```
+
+接口层把「素材落库」与「管线跑一轮」从命令行搬进了界面——
+它们是「标注 30 篇」做得完的前提。
 
 ### 验收条件的现状
 
@@ -97,6 +101,8 @@ cli.py      ingest / extract / group / align / pipeline / eval
 | 三个指标 | `GET /api/workbench/eval` |
 | 待对齐队列 | `GET /api/workbench/alignments` |
 | 提纯概览 | `GET /api/workbench/extractions` |
+| 粘贴导入 | `POST /api/ingest` |
+| 跑一轮管线（SSE 进度） | `POST /api/pipeline/run` |
 
 界面上的两条硬要求：
 

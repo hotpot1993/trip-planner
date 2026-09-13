@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -98,6 +99,31 @@ class MergeReport:
     single_source: int = 0
 
 
+@dataclass(frozen=True)
+class Progress:
+    """管线跑到哪了。
+
+    **给人看的一行**放在 `label` 里，而不是让界面拿 `step` 与计数自己拼文案——
+    拼文案的地方一多，同一件事在 CLI、SSE、日志里就会有三种说法。
+
+    提纯一篇要 2.5–4.5 秒、对齐一条提及要一次高德请求，几十篇的批量能跑上
+    几分钟。没有进度的话，界面只能对着空屏，人分不清「在跑」与「卡住」。
+    """
+
+    step: str  # extract | align | group | merge
+    label: str
+    index: int = 0
+    total: int = 0
+
+
+# 进度回调是同步的、可选的，默认什么都不做——服务层不该知道有没有人在听
+ProgressHook = Callable[["Progress"], None]
+
+
+def _noop(_progress: Progress) -> None:
+    return None
+
+
 # ─── 提纯 ────────────────────────────────────────────────────────
 
 
@@ -107,6 +133,7 @@ def extract_documents(
     document_ids: list[str] | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
     force: bool = False,
+    on_progress: ProgressHook | None = None,
 ) -> ExtractionReport:
     """对素材跑提纯，把通过引文校验的候选挂到待对齐队列上。
 
@@ -125,13 +152,16 @@ def extract_documents(
     owned = conn is None
     active = conn or connect()
     report = ExtractionReport()
+    notify = on_progress or _noop
     try:
         rows = _documents_to_extract(
             active, document_ids=document_ids, limit=limit, force=force
         )
-        for row in rows:
+        for index, row in enumerate(rows, 1):
             document_id = row["id"]
             report.documents += 1
+            title = row["title"] or document_id
+            notify(Progress("extract", f"提纯《{title}》", index, len(rows)))
             try:
                 raw = extract(title=row["title"], body=row["body_text"], conn=active)
             except ExtractionError as exc:
@@ -311,6 +341,7 @@ def align_pending(
     limit: int = DEFAULT_BATCH_LIMIT,
     search=None,
     fetch=None,
+    on_progress: ProgressHook | None = None,
 ) -> AlignmentReport:
     """把待对齐队列里的提及逐条去高德找主体，找得到的落库成结论。
 
@@ -325,11 +356,17 @@ def align_pending(
 
     searcher = search or (lambda keywords, city: search_pois(keywords, city=city))
     fetcher = fetch or (lambda poi_id: fetch_poi(poi_id))
+    notify = on_progress or _noop
 
     try:
         tasks = ks.pending_alignments(conn=active, limit=limit)
-        for task in tasks:
+        for index, task in enumerate(tasks, 1):
             report.mentions += 1
+            notify(
+                Progress(
+                    "align", f"对齐「{task.mention_name}」", index, len(tasks)
+                )
+            )
             city_adcode = task.city_adcode or _guess_city_adcode(active, task)
             if not city_adcode:
                 report.unresolved_subjects += 1

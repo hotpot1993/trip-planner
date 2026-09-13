@@ -88,6 +88,7 @@ M3 的链路用 5 篇素材打真实模型与真实高德接口跑通：提纯 4
 - **金标准集与评测**（ADR-0010）：人工标注必须落回原文（引文要能在正文里定位，位置由程序算）；命中判定按「主体 + 极性 + 事实点位置」三关，**不按文本相似度**——「午门是唯一入口」对「只有午门能进」算命中，「门票 100」对「门票 120」不算
 - **三个指标与样本量并排出现**：`ls eval run` 报召回率、精确率、对齐准确率，同时列出漏抽与多抽的原文片段。不到 30 篇时每次都打警告——一个 2 篇素材算出来的 100% 是噪声
 - **ADR-0009 体检**：`ls align audit` 一条 SQL 查出所有挂在子点上的结论与待办。这条检查是金标准集第一次跑起来时逼出来的
+- **导入与管线的接口**：`POST /api/ingest` 粘贴导入、`POST /api/pipeline/run` 跑一轮并用 SSE 报进度（形状与 `POST /api/plan/stream` 一致，因为管线是长任务：提纯一篇几秒、对齐一条一次高德请求）
 - **CLI**：`ls ingest paste|import|fetch`、`ls extract run|stats`、`ls group run`、`ls align run|list|show|audit`、`ls pipeline run`、`ls eval gold|run`
 
 ### 关于 12306 的四个实测结论

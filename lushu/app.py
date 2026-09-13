@@ -20,6 +20,7 @@ from lushu.api import (
     eval_router,
     gold_router,
     health_router,
+    pipeline_router,
     plan_router,
     trip_router,
     workbench_router,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(workbench_router)
     app.include_router(gold_router)
     app.include_router(eval_router)
+    app.include_router(pipeline_router)
 
     _register_error_handlers(app)
     _mount_frontend(app)
