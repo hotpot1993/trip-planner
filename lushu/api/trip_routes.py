@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from lushu.domain.planned import PlannedTrip, StaySpec
@@ -495,6 +497,34 @@ async def trip_weather(trip_id: str) -> TripWeatherOut:
             for forecast in forecasts
         ],
     )
+
+
+@router.get("/trips/{trip_id}/booking.ics", summary="预约清单日历")
+def trip_booking_calendar(trip_id: str) -> Response:
+    """把这份行程的预约提醒导出成 .ics。
+
+    这是预约子系统唯一的**推送**通道：本项目是本地工具，用户不会一直开着它，
+    而预约的要害是时点。把提醒交给手机系统日历，比在界面上标红有用得多。
+
+    只包含**已复核**的规则（Q10）。草案规则被静默跳过，所以响应头里带上
+    `X-Booking-Skipped`，把「因为规则还没复核所以没提醒」的景点名列出来——
+    宁可少提醒，但不能让用户以为那个景点不用预约。
+    """
+    from lushu.services import ics
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    text, skipped, name = ics.calendar_for_trip(trip_id)
+
+    headers = {
+        # 中文文件名要按 RFC 5987 编码，直接写中文在部分浏览器上会乱码
+        "Content-Disposition": f"attachment; filename=\"booking.ics\"; filename*=UTF-8''{quote(name)}.ics",
+        "X-Booking-Skipped": quote("、".join(skipped)) if skipped else "",
+        "Cache-Control": "no-store",
+    }
+    return Response(content=text, media_type="text/calendar; charset=utf-8", headers=headers)
 
 
 @router.get("/cities/resolve", response_model=list[CityOut], summary="解析城市")

@@ -218,6 +218,12 @@ def _register_booking(sub) -> None:
     review.add_argument("--note", help="复核备注")
     review.set_defaults(_handler=_cmd_booking_review)
 
+    ics = actions.add_parser("ics", help="把某份行程的预约提醒导出成 .ics")
+    ics.add_argument("trip_id")
+    ics.add_argument("--out", type=Path, help="输出文件，不给就打到标准输出")
+    ics.add_argument("--today", help="按这一天算紧迫度，格式 YYYY-MM-DD（核对用）")
+    ics.set_defaults(_handler=_cmd_booking_ics)
+
     booking.set_defaults(_handler=lambda _args: _usage(booking))
 
 
@@ -471,6 +477,31 @@ def _cmd_booking_review(args: argparse.Namespace) -> int:
         return 1
 
     print(f"已复核 {args.poi_id}，复验到期 {bs.get_rule(args.poi_id).verify_due_at}")  # type: ignore[union-attr]
+    return 0
+
+
+def _cmd_booking_ics(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from lushu.services import ics as ics_service
+
+    today = date.fromisoformat(args.today) if args.today else None
+    text, skipped, name = ics_service.calendar_for_trip(args.trip_id, today=today)
+
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+        print(f"已写出 {args.out}")
+    else:
+        print(text, end="")
+
+    if skipped:
+        print()
+        print("这些景点算不出放票日，没有生成提醒：")
+        for item in skipped:
+            print(f"  {item}")
+        print("要么规则里没写提前天数，要么规则还没复核（草案不对用户可见）")
+    else:
+        print(f"《{name}》的预约提醒都在里面了。导入手机日历即可。", file=sys.stderr)
     return 0
 
 
