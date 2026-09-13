@@ -13,10 +13,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from lushu.adapters.poi import PoiSearchError
 from lushu.domain.poi import CandidatePoi
 from lushu.services import meal_coords as mc
 from lushu.store import connect, initialize, transaction
@@ -58,6 +60,20 @@ def _trip_with_meals(db: Path, *meals: tuple[str, float | None, float | None]) -
                 "VALUES (?, 'day_1', ?, 'meal', ?, 'ai', ?, ?)",
                 (f"di_{index}", index, title, lat, lng),
             )
+
+
+def _around_returning(*pois: CandidatePoi):
+    """把 `search_returning` 包成周边搜索的形状。
+
+    两个搜索的参数不同（一个按城市、一个按坐标），语义也不同，
+    所以不共用一个假函数——共用会让「传错坐标」这类错误测不出来。
+    """
+    inner = search_returning(*pois)
+
+    def around(keywords: str, *, lat_gcj02: float, lng_gcj02: float):
+        return inner(keywords, "")
+
+    return around
 
 
 def _shop(
@@ -179,7 +195,7 @@ class TestResolution:
         slot = mc.pending_meals(conn=connect(db))[0]
 
         def boom(_keywords: str, _city: str):
-            raise RuntimeError("CUQPS_HAS_EXCEEDED_THE_LIMIT")
+            raise PoiSearchError("CUQPS_HAS_EXCEEDED_THE_LIMIT")
 
         fix = mc.resolve_meal(slot, search=boom)
 
@@ -270,6 +286,193 @@ class TestResolution:
 
         assert fix.resolved is False
         assert "名字差得远" in fix.reason
+
+
+class TestNearbyStage:
+    """第二轮：绕着当天有坐标的景点找。
+
+    这是**更接近真相的范围**——行程里的餐饮名本来就是引擎按当天景点做周边
+    搜索拿到的。实测「绿柳居」全城 8 家同分，绕着夫子庙搜只有一家。
+    """
+
+    def _slot(self, db: Path, title: str) -> mc.MealSlot:
+        _trip_with_meals(db, (title, None, None))
+        return mc.pending_meals(conn=connect(db))[0]
+
+    def test_anchors_come_from_the_same_day(self, db: Path) -> None:
+        """锚点只取当天、且有坐标的景点。"""
+        _trip_with_meals(db, ("绿柳居", None, None))
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, typecode, "
+                "lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                "('B_FZM', '夫子庙', '320100', '320104', '110201', 32.0209, 118.7886, ?)",
+                (NOW,),
+            )
+            conn.execute(
+                "INSERT INTO day_item (id, day_id, seq, kind, poi_id, title, origin, "
+                "lat_gcj02, lng_gcj02) VALUES "
+                "('di_poi', 'day_1', -1, 'poi', 'B_FZM', '夫子庙', 'ai', 32.0209, 118.7886)"
+            )
+
+        slot = mc.pending_meals(conn=connect(db))[0]
+
+        assert [anchor.title for anchor in slot.anchors] == ["夫子庙"]
+        assert slot.anchors[0].lat_gcj02 == 32.0209
+
+    def test_anchors_fall_back_to_the_entity_row(self, db: Path) -> None:
+        """**历史行程的景点坐标在 `poi` 表里，天项那一列是空的。**
+
+        迁移 10 才让天项自己记坐标，之前生成的行程只有 `poi_id` 指过去。
+        第一版锚点查询只看了 `day_item.lat_gcj02`，于是在真实行程上一个锚点都
+        取不到——表现是「周边搜索一次都没跑」，而屏幕上完全看不出为什么。
+        取用顺序必须是「先实体、后天项」，与 `roadbook_service` 同一条规矩。
+        """
+        _trip_with_meals(db, ("绿柳居", None, None))
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, typecode, "
+                "lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                "('B_FZM', '夫子庙', '320100', '320104', '110201', 32.0209, 118.7886, ?)",
+                (NOW,),
+            )
+            conn.execute(
+                "INSERT INTO day_item (id, day_id, seq, kind, poi_id, title, origin) "
+                "VALUES ('di_poi', 'day_1', -1, 'poi', 'B_FZM', '夫子庙', 'ai')"
+            )
+
+        slot = mc.pending_meals(conn=connect(db))[0]
+
+        assert [anchor.title for anchor in slot.anchors] == ["夫子庙"]
+        assert slot.anchors[0].lat_gcj02 == 32.0209
+        assert slot.anchors[0].lng_gcj02 == 118.7886
+
+    def test_a_meal_with_an_entity_is_not_pending(self, db: Path) -> None:
+        """餐饮项若是挂上了实体（坐标在 `poi` 里），就不缺坐标，不该进待办。"""
+        _trip_with_meals(db, ("绿柳居", None, None))
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, typecode, "
+                "lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                "('B_LLJ', '绿柳居', '320100', '320104', '050100', 32.03, 118.79, ?)",
+                (NOW,),
+            )
+            conn.execute(
+                "UPDATE day_item SET poi_id = 'B_LLJ' WHERE id = 'di_0'",
+            )
+
+        assert mc.pending_meals(conn=connect(db)) == []
+
+    def test_a_tie_in_the_city_is_broken_nearby(self, db: Path) -> None:
+        """全城 8 家同分，绕着景点只有一家——这就是这一轮存在的理由。"""
+        slot = self._slot(db, "绿柳居")
+        slot = replace(
+            slot,
+            anchors=(mc.Anchor("di_poi", "夫子庙", 32.0209, 118.7886),),
+        )
+        first = _shop("B_NJ_1", "绿柳居(老门东店)", lat=32.018, lng=118.79)
+        second = _shop("B_NJ_2", "绿柳居(新街口店)", lat=32.04, lng=118.78)
+
+        fix = mc.resolve_meal(
+            slot,
+            search=search_returning(first, second),  # 城市搜索：两家同分
+            around=_around_returning(first),  # 周边搜索：只剩一家
+        )
+
+        assert fix.resolved is True
+        assert fix.matched_name == "绿柳居(老门东店)"
+        assert fix.near == "夫子庙"
+
+    def test_the_city_result_still_wins_when_it_is_decisive(self, db: Path) -> None:
+        """城市搜索已经定下来了就不绕圈子——省一次请求，也少一层推断。"""
+        slot = self._slot(db, "南京大牌档（中山陵店）")
+        slot = replace(slot, anchors=(mc.Anchor("di_poi", "中山陵", 32.06, 118.85),))
+        called = False
+
+        def around(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            return _around_returning()("x", lat_gcj02=0, lng_gcj02=0)
+
+        fix = mc.resolve_meal(slot, search=search_returning(_shop()), around=around)
+
+        assert fix.resolved is True
+        assert called is False
+
+    def test_tries_each_anchor_until_one_is_decisive(self, db: Path) -> None:
+        slot = self._slot(db, "绿柳居")
+        slot = replace(
+            slot,
+            anchors=(
+                mc.Anchor("a1", "夫子庙", 32.0209, 118.7886),
+                mc.Anchor("a2", "中山陵", 32.0600, 118.8500),
+            ),
+        )
+        tried: list[float] = []
+        branch = _shop("B_NJ_1", "绿柳居(老门东店)", lat=32.018, lng=118.79)
+        other = _shop("B_NJ_2", "绿柳居(下马坊店)", lat=32.03, lng=118.86)
+
+        def around(_keywords: str, *, lat_gcj02: float, lng_gcj02: float):
+            tried.append(lat_gcj02)
+            # 第一处锚点又给出两家同分，第二处才唯一
+            if lat_gcj02 == 32.0209:
+                return _around_returning(branch, other)("x", lat_gcj02=0, lng_gcj02=0)
+            return _around_returning(other)("x", lat_gcj02=0, lng_gcj02=0)
+
+        fix = mc.resolve_meal(slot, search=search_returning(), around=around)
+
+        assert fix.resolved is True
+        assert fix.near == "中山陵"
+        assert tried == [32.0209, 32.06]
+
+    def test_no_anchor_leaves_it_empty(self, db: Path) -> None:
+        """一天里没有带坐标的景点就没人可绕——留空，并说清城市那轮也没成。"""
+        slot = self._slot(db, "绿柳居")
+
+        fix = mc.resolve_meal(slot, search=search_returning(_shop()), around=lambda **kw: None)
+
+        assert fix.resolved is False
+        assert slot.anchors == ()
+
+    def test_says_it_looked_around_when_that_also_failed(self, db: Path) -> None:
+        """两种范围都试过要说出来，否则人会以为只搜了一次城市。"""
+        slot = self._slot(db, "绿柳居")
+        slot = replace(slot, anchors=(mc.Anchor("a1", "夫子庙", 32.02, 118.79),))
+
+        fix = mc.resolve_meal(
+            slot, search=search_returning(), around=_around_returning()
+        )
+
+        assert fix.resolved is False
+        assert "绕着当天的 夫子庙" in fix.reason
+
+    def test_a_nearby_search_failure_is_reported_as_such(self, db: Path) -> None:
+        slot = self._slot(db, "绿柳居")
+        slot = replace(slot, anchors=(mc.Anchor("a1", "夫子庙", 32.02, 118.79),))
+
+        def boom(*_args, **_kwargs):
+            raise PoiSearchError("CUQPS_HAS_EXCEEDED_THE_LIMIT")
+
+        fix = mc.resolve_meal(slot, search=search_returning(), around=boom)
+
+        assert fix.resolved is False
+        assert "周边搜索失败" in fix.reason
+        assert "CUQPS" in fix.reason
+
+    def test_a_broken_stub_is_not_dressed_up_as_a_network_failure(self, db: Path) -> None:
+        """只接 `PoiSearchError`。
+
+        全接 `Exception` 的话，注入进来的搜索函数写错签名也会显示成
+        「高德搜索失败：unexpected keyword argument」——那是我们的 bug，
+        该炸就炸，不该伪装成网络问题。这个测试就是被那次误报逼出来的。
+        """
+        slot = self._slot(db, "绿柳居")
+
+        def wrong_signature(*_args, **_kwargs):
+            raise TypeError("search() got an unexpected keyword argument")
+
+        with pytest.raises(TypeError):
+            mc.resolve_meal(slot, search=wrong_signature)
 
 
 class TestPlanFill:

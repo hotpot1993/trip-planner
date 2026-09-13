@@ -38,6 +38,7 @@ from lushu import config
 from lushu.domain.poi import CandidatePoi
 
 TEXT_SEARCH_URL = "https://restapi.amap.com/v3/place/text"
+AROUND_SEARCH_URL = "https://restapi.amap.com/v3/place/around"
 DETAIL_URL = "https://restapi.amap.com/v3/place/detail"
 
 # 城市范围的 POI 搜索。够覆盖「搜一个景点名，看前几名候选」这个用法。
@@ -45,6 +46,13 @@ DEFAULT_LIMIT = 10
 
 # 高德单次最多 25 条。
 MAX_LIMIT = 25
+
+# 周边搜索默认半径（米）。
+#
+# 取 3 公里：这一层的用途是「当天景点旁边的那家店」——一个景区周边加市中心
+# 的一片，3 公里都能覆盖；再远就不该叫「附近」了，那正是它要挡住的那些
+# 同名分店（实测「绿柳居」全城 8 家同分，夫子庙周边只有 1 家）。
+DEFAULT_RADIUS_M = 3000
 
 
 class PoiSearchError(RuntimeError):
@@ -101,6 +109,47 @@ def parse_poi(raw: dict) -> CandidatePoi | None:
     )
 
 
+def _get_payload(
+    url: str, params: dict[str, str], *, client: httpx.Client | None, what: str
+) -> dict:
+    """发一次请求并拿回校验过的 JSON。
+
+    三条查询（按名搜、周边搜、按 id 取详情）共用它：差别只在 URL 与参数，
+    而错误处理必须一致——**一个接口的失败不该长得跟另一个不一样**，
+    否则调用方要按不同的文案去判断同一件事。
+    """
+    owned = client is None
+    active = client or httpx.Client(timeout=20)
+    try:
+        response = active.get(f"{url}?{urllib.parse.urlencode(params)}")
+    except httpx.HTTPError as exc:
+        raise PoiSearchError(f"高德 POI {what}请求失败：{type(exc).__name__}") from exc
+    finally:
+        if owned:
+            active.close()
+
+    if response.status_code != 200:
+        raise PoiSearchError(
+            f"高德 POI {what}返回 HTTP {response.status_code}：{response.text[:120]}"
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise PoiSearchError(f"高德 POI {what}返回的内容不是合法 JSON") from exc
+
+    if str(payload.get("status")) != "1":
+        raise PoiSearchError(f"高德 POI {what}失败：{payload.get('info') or '未知错误'}")
+    return payload
+
+
+def _api_key(api_key: str | None, what: str) -> str:
+    key = (api_key or config.amap_api_key()).strip()
+    if not key:
+        raise PoiSearchError(f"缺少 AMAP_API_KEY，无法{what}")
+    return key
+
+
 def search_pois(
     keywords: str,
     *,
@@ -121,12 +170,8 @@ def search_pois(
     if not city_text:
         raise PoiSearchError("必须给出城市名，否则无法限定搜索范围")
 
-    key = (api_key or config.amap_api_key()).strip()
-    if not key:
-        raise PoiSearchError("缺少 AMAP_API_KEY，无法搜索 POI")
-
     params = {
-        "key": key,
+        "key": _api_key(api_key, "搜索 POI"),
         "keywords": keyword,
         "city": city_text,
         "citylimit": "true",
@@ -136,30 +181,7 @@ def search_pois(
         "extensions": "all",
         "output": "json",
     }
-    url = f"{TEXT_SEARCH_URL}?{urllib.parse.urlencode(params)}"
-
-    owned = client is None
-    active = client or httpx.Client(timeout=20)
-    try:
-        response = active.get(url)
-    except httpx.HTTPError as exc:
-        raise PoiSearchError(f"高德 POI 搜索请求失败：{type(exc).__name__}") from exc
-    finally:
-        if owned:
-            active.close()
-
-    if response.status_code != 200:
-        raise PoiSearchError(
-            f"高德 POI 搜索返回 HTTP {response.status_code}：{response.text[:120]}"
-        )
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise PoiSearchError("高德 POI 搜索返回的内容不是合法 JSON") from exc
-
-    if str(payload.get("status")) != "1":
-        raise PoiSearchError(f"高德 POI 搜索失败：{payload.get('info') or '未知错误'}")
+    payload = _get_payload(TEXT_SEARCH_URL, params, client=client, what="搜索")
 
     raw_pois = payload.get("pois") or []
     # 返回 None 表示那条缺 id 或缺坐标，直接丢弃而不是补一个假坐标
@@ -168,6 +190,55 @@ def search_pois(
         candidates=tuple(poi for poi in parsed if poi is not None),
         query=keyword,
         city=city_text,
+        raw_count=len(raw_pois),
+    )
+
+
+def search_around_pois(
+    keywords: str,
+    *,
+    lat_gcj02: float,
+    lng_gcj02: float,
+    radius_m: int = DEFAULT_RADIUS_M,
+    limit: int = DEFAULT_LIMIT,
+    api_key: str | None = None,
+    client: httpx.Client | None = None,
+) -> PoiSearchResult:
+    """在一个坐标周围按关键字搜 POI。
+
+    **为什么需要它**（`services/meal_coords.py`）：行程里的餐饮名本来就是引擎
+    按当天景点做**周边搜索**拿到的（`meal_search_node` 用
+    `search_around_pois_async`），所以它们的正确落点也在那一片。按城市按名搜
+    「绿柳居」会得到 8 家同分的分店；按夫子庙周边搜，只有一家。
+
+    传的是 GCJ-02 坐标（ADR-0003），不转换：高德吃的就是 GCJ-02。
+
+    返回的 `PoiSearchResult.city` 是空串——周边搜索按坐标限定范围，
+    没有城市参数可传。
+    """
+    keyword = keywords.strip()
+    if not keyword:
+        return PoiSearchResult(candidates=(), query=keywords, city="", raw_count=0)
+
+    params = {
+        "key": _api_key(api_key, "周边搜索"),
+        # 高德的 location 是「经度,纬度」，与国内的写法习惯相反
+        "location": f"{lng_gcj02:.6f},{lat_gcj02:.6f}",
+        "keywords": keyword,
+        "radius": str(max(1, radius_m)),
+        "offset": str(max(1, min(limit, MAX_LIMIT))),
+        "page": "1",
+        "extensions": "all",
+        "output": "json",
+    }
+    payload = _get_payload(AROUND_SEARCH_URL, params, client=client, what="周边搜索")
+
+    raw_pois = payload.get("pois") or []
+    parsed = [parse_poi(item) for item in raw_pois if isinstance(item, dict)]
+    return PoiSearchResult(
+        candidates=tuple(poi for poi in parsed if poi is not None),
+        query=keyword,
+        city="",
         raw_count=len(raw_pois),
     )
 
@@ -186,37 +257,14 @@ def fetch_poi(
     「本体还是子点」这个判断根本无从做起（`lushu/domain/align.py` 里
     `_SUB_PENALTY` 需要知道父节点也在候选中）。
     """
-    key = (api_key or config.amap_api_key()).strip()
-    if not key:
-        raise PoiSearchError("缺少 AMAP_API_KEY，无法查询 POI 详情")
+    key = _api_key(api_key, "查询 POI 详情")
 
     target = poi_id.strip()
     if not target:
         return None
 
     params = {"key": key, "id": target, "extensions": "all", "output": "json"}
-    url = f"{DETAIL_URL}?{urllib.parse.urlencode(params)}"
-
-    owned = client is None
-    active = client or httpx.Client(timeout=20)
-    try:
-        response = active.get(url)
-    except httpx.HTTPError as exc:
-        raise PoiSearchError(f"高德 POI 详情请求失败：{type(exc).__name__}") from exc
-    finally:
-        if owned:
-            active.close()
-
-    if response.status_code != 200:
-        raise PoiSearchError(f"高德 POI 详情返回 HTTP {response.status_code}")
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise PoiSearchError("高德 POI 详情返回的内容不是合法 JSON") from exc
-
-    if str(payload.get("status")) != "1":
-        raise PoiSearchError(f"高德 POI 详情失败：{payload.get('info') or '未知错误'}")
+    payload = _get_payload(DETAIL_URL, params, client=client, what="详情")
 
     pois = payload.get("pois") or []
     if not pois or not isinstance(pois[0], dict):

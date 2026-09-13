@@ -15,9 +15,11 @@ import httpx
 import pytest
 
 from lushu.adapters.poi import (
+    AROUND_SEARCH_URL,
     MAX_LIMIT,
     PoiSearchError,
     parse_poi,
+    search_around_pois,
     search_pois,
 )
 
@@ -294,3 +296,106 @@ class TestSearchPois:
 
         assert not result
         assert result.raw_count == 0
+
+
+class TestSearchAroundPois:
+    """周边搜索。
+
+    它的用处不是「再搜一遍」，而是**换一个范围**：按城市按名搜「绿柳居」
+    得到 8 家同分的分店，按夫子庙周边搜只有一家。行程里的餐饮名本来就是
+    引擎按当天景点做周边搜索拿到的，所以它们的正确落点也在那一片。
+    """
+
+    def test_sends_location_as_lng_lat(self) -> None:
+        """高德的 `location` 是「经度,纬度」，与国内说话的「纬经」相反。
+
+        写反了不会报错，只会搜到地球另一边的空地——所以这条要钉死。
+        """
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(dict(request.url.params))
+            return httpx.Response(200, text=json.dumps(ok_response([XIAN_MUSEUM])))
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            search_around_pois(
+                "绿柳居", lat_gcj02=32.0209, lng_gcj02=118.7886, api_key="k", client=client
+            )
+
+        assert captured["location"] == "118.788600,32.020900"
+        assert captured["keywords"] == "绿柳居"
+        assert captured["radius"] == "3000"
+        assert captured["extensions"] == "all"
+        assert "city" not in captured
+
+    def test_hits_the_around_endpoint(self) -> None:
+        """端点不能写错——按名搜的端点会忽略坐标，返回全国的店。"""
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url).split("?")[0])
+            return httpx.Response(200, text=json.dumps(ok_response([])))
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            search_around_pois("绿柳居", lat_gcj02=32.02, lng_gcj02=118.79, api_key="k", client=client)
+
+        assert seen == [AROUND_SEARCH_URL]
+
+    def test_radius_can_be_widened(self) -> None:
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(dict(request.url.params))
+            return httpx.Response(200, text=json.dumps(ok_response([])))
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            search_around_pois(
+                "绿柳居", lat_gcj02=32.02, lng_gcj02=118.79, radius_m=8000, api_key="k", client=client
+            )
+
+        assert captured["radius"] == "8000"
+
+    def test_blank_keywords_do_not_call_the_api(self) -> None:
+        """空关键字不发请求：那会拿到附近所有店，与「找这一家」正好相反。"""
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(200, text=json.dumps(ok_response([])))
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            result = search_around_pois("   ", lat_gcj02=32.02, lng_gcj02=118.79, api_key="k", client=client)
+
+        assert called is False
+        assert result.raw_count == 0
+
+    def test_missing_api_key_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AMAP_API_KEY", "")
+        with pytest.raises(PoiSearchError, match="AMAP_API_KEY"):
+            search_around_pois("绿柳居", lat_gcj02=32.02, lng_gcj02=118.79)
+
+    def test_api_error_status_raises(self) -> None:
+        """失败的长相要跟按名搜一致，调用方才不用按不同的文案判同一件事。"""
+        payload = {"status": "0", "info": "CUQPS_HAS_EXCEEDED_THE_LIMIT", "pois": []}
+        with httpx.Client(transport=transport_returning(payload)) as client:  # type: ignore[arg-type]
+            with pytest.raises(PoiSearchError, match="CUQPS_HAS_EXCEEDED_THE_LIMIT"):
+                search_around_pois("绿柳居", lat_gcj02=32.02, lng_gcj02=118.79, api_key="k", client=client)
+
+    def test_network_error_raises_readable_message(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("连接超时")
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(PoiSearchError, match="ConnectTimeout"):
+                search_around_pois("绿柳居", lat_gcj02=32.02, lng_gcj02=118.79, api_key="k", client=client)
+
+    def test_result_keeps_the_places_own_coordinates(self) -> None:
+        with httpx.Client(transport=transport_returning(ok_response([XIAN_MUSEUM]))) as client:  # type: ignore[arg-type]
+            result = search_around_pois(
+                "陕西历史博物馆", lat_gcj02=34.22, lng_gcj02=108.95, api_key="k", client=client
+            )
+
+        assert result.candidates[0].poi_id == "B001D03PEX"
+        assert result.candidates[0].lat_gcj02 == pytest.approx(34.222085)
+        assert result.candidates[0].lng_gcj02 == pytest.approx(108.953135)

@@ -341,18 +341,22 @@ def _cmd_trip_coords(args: argparse.Namespace) -> int:
     print(f"逐个到高德查一遍，每次间隔 {interval} 秒（QPS 限制）")
     print()
 
-    from lushu.adapters.poi import search_pois
+    from lushu.adapters.poi import search_around_pois, search_pois
 
     report = meal_coords.plan_fill(
         slots,
         search=lambda keywords, city: search_pois(keywords, city=city),
+        around=lambda keywords, lat_gcj02, lng_gcj02: search_around_pois(
+            keywords, lat_gcj02=lat_gcj02, lng_gcj02=lng_gcj02
+        ),
         pause=interval,
     )
     for fix in report.fixes:
         where = f"{fix.slot.day_date} {fix.slot.city_name}"
         if fix.resolved:
             print(f"  ✅ {where} {fix.slot.title}")
-            print(f"      → {fix.matched_name}　{fix.lat_gcj02},{fix.lng_gcj02}")
+            origin = f"（在{fix.near}周边找到）" if fix.near else ""
+            print(f"      → {fix.matched_name}{origin}　{fix.lat_gcj02},{fix.lng_gcj02}")
             if fix.address:
                 print(f"      {fix.address}")
         else:

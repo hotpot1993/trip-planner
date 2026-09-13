@@ -21,16 +21,20 @@ M6 交付时路书上有 7 处 `leg_missing`，**全部落在餐饮项上，而�
 
 默认只算不写（`--apply` 才落库），与 `ls verify scan` 同一个规矩。
 
-**补充（真机跑过之后）**：这条路只补回来一个坐标，路书的 7 处空洞一个都没少。
-原因不在判据，在**问题的形状**：一段路要两个端点都有坐标才算得出来，
-而 6 个餐饮名在城市范围的按名搜索里根本定不下来——它们是通用菜名
-（「老孙家泡馍」搜出 4 家同分）或没有分店信息的品牌名（「绿柳居」8 家同分）。
+**真机跑过的账**（真实行程，7 个餐饮项）：
 
-真正能定下来的是**附近**那一层：这些店名本来就是引擎按当天景点「周边搜索」
-拿到的（`meal_search_node` 用 `search_around_pois_async`），所以正确做法是
-拿当天景点的坐标做周边搜索、再在结果里按名字挑——8 家同分的绿柳居，
-在夫子庙附近只有一家。这一步还没有做（我们的 `adapters/poi.py` 目前只有
-文本搜索与详情，没有周边搜索）。
+| 做法 | 结果 |
+|---|---|
+| 只按城市按名搜 | 查到 1 个（鸭血粉丝汤），6 个定不下来，路书空洞 7 处一个没少 |
+| 加上「绕着当天景点搜」 | 又查到 1 个（子午路张记肉夹馍，陕历博 1.8 公里外的分店），**空洞 7 → 6** |
+
+剩下的 5 个是判据**故意**不补的，各有各的原因：绿柳居与老孙家泡馍在周边还是
+多家同分（品牌名没带分店，本来就不该猜）、许记糕点最像的只有 0.34、
+南京大牌档（中山陵店）在高德上叫「南京大牌档(中山陵金陵店)」、
+「临潼石榴汁与 biangbiang 面」不是店名。
+
+**一段路要两个端点都有坐标才算得出来**——所以补一个点常常不减少一处空洞。
+剩下这 5 个要么人工指定（人知道说的是哪一家），要么就不补。
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+from lushu.adapters.poi import PoiSearchError
 from lushu.store.connection import connect
 
 # 高德 QPS 限制实测会撞（`CUQPS_HAS_EXCEEDED_THE_LIMIT`），
@@ -53,6 +58,20 @@ _FOOD_TYPE_NAME_PREFIX = "餐饮"
 
 
 @dataclass(frozen=True)
+class Anchor:
+    """同一天里有坐标的一处（通常是景点）。
+
+    周边搜索绕着它做：行程里的餐饮名本来就是引擎按当天景点周边搜出来的，
+    所以它们的落点也在那一片。
+    """
+
+    item_id: str
+    title: str
+    lat_gcj02: float
+    lng_gcj02: float
+
+
+@dataclass(frozen=True)
 class MealSlot:
     """一个缺坐标的餐饮天项。"""
 
@@ -62,6 +81,7 @@ class MealSlot:
     title: str
     city_name: str
     city_adcode: str | None = None
+    anchors: tuple[Anchor, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,6 +98,9 @@ class MealFix:
     lng_gcj02: float | None = None
     address: str | None = None
     reason: str = ""
+    # 靠周边搜索定下来时，绕着哪一处找到的。**证据要跟着结论走**：
+    # 「在中山陵周边找到」比一个坐标更能让人判断这次匹配对不对。
+    near: str = ""
 
     @property
     def resolved(self) -> bool:
@@ -100,23 +123,56 @@ class FillReport:
 def pending_meals(
     *, conn: sqlite3.Connection | None = None, trip_id: str | None = None
 ) -> list[MealSlot]:
-    """缺坐标的餐饮天项。已经填过的不再出现——重跑是幂等的。"""
+    """缺坐标的餐饮天项，连着它那天的锚点。已经填过的不再出现——重跑是幂等的。"""
     owned = conn is None
     active = conn or connect()
     try:
+        # 坐标的取用顺序是「先实体、后天项」——与 `roadbook_service` 和
+        # `trip_store._load_day` 同一条规矩（ADR-0001 的补充）。
+        # **第一次写这里时只看了 day_item**，于是真实行程上一个锚点都取不到：
+        # 迁移 10 才让天项自己记坐标，而历史行程的景点坐标一直在 poi 表里。
+        # 表现是「周边搜索一次都没跑」，而原因看不出来。
         rows = active.execute(
-            "SELECT i.id, d.trip_id, d.date, i.title, cs.city_name, cs.city_adcode "
+            "SELECT i.id, d.id AS day_id, d.trip_id, d.date, i.title, cs.city_name, "
+            "       cs.city_adcode "
             "FROM day_item i "
             "JOIN day d ON d.id = i.day_id "
             "JOIN city_stay cs ON cs.id = d.city_stay_id "
-            "WHERE i.kind = 'meal' AND i.lat_gcj02 IS NULL "
+            "LEFT JOIN poi p ON p.amap_poi_id = i.poi_id "
+            "WHERE i.kind = 'meal' "
+            "  AND COALESCE(p.lat_gcj02, i.lat_gcj02) IS NULL "
             "  AND (? IS NULL OR d.trip_id = ?) "
             "ORDER BY d.date, i.seq",
             (trip_id, trip_id),
         ).fetchall()
+        # 锚点一次全取回来再按天分组，而不是每个餐饮项查一次（避免 N+1）。
+        # 库很小，多取几行不值得为它拼动态 SQL。
+        anchor_rows = active.execute(
+            "SELECT i.day_id, i.id, i.title, "
+            "       COALESCE(p.lat_gcj02, i.lat_gcj02) AS lat, "
+            "       COALESCE(p.lng_gcj02, i.lng_gcj02) AS lng "
+            "FROM day_item i "
+            "LEFT JOIN poi p ON p.amap_poi_id = i.poi_id "
+            "WHERE i.kind = 'poi' "
+            "  AND COALESCE(p.lat_gcj02, i.lat_gcj02) IS NOT NULL "
+            "  AND COALESCE(p.lng_gcj02, i.lng_gcj02) IS NOT NULL "
+            "ORDER BY i.seq"
+        ).fetchall()
     finally:
         if owned:
             active.close()
+
+    by_day: dict[str, list[Anchor]] = {}
+    for row in anchor_rows:
+        by_day.setdefault(row["day_id"], []).append(
+            Anchor(
+                item_id=row["id"],
+                title=row["title"],
+                lat_gcj02=row["lat"],
+                lng_gcj02=row["lng"],
+            )
+        )
+
     return [
         MealSlot(
             item_id=row["id"],
@@ -125,12 +181,13 @@ def pending_meals(
             title=row["title"],
             city_name=row["city_name"] or "",
             city_adcode=row["city_adcode"],
+            anchors=tuple(by_day.get(row["day_id"], ())),
         )
         for row in rows
     ]
 
 
-def resolve_meal(slot: MealSlot, *, search) -> MealFix:
+def resolve_meal(slot: MealSlot, *, search, around=None) -> MealFix:
     """把一个餐饮名对到高德的店上，只取**分得清**的那一种。
 
     **不能用 `domain/align.py` 那套。** 它回答的是「这是哪个景点」，为此有一道
@@ -143,17 +200,22 @@ def resolve_meal(slot: MealSlot, *, search) -> MealFix:
     但**沿用它的名称分**（`name_score`）与同一个及格线
     （`MATCH_SCORE_THRESHOLD`）：名字像不像是一回事，没必要有两套。
 
-    四道关，缺一不可：
+    两次尝试，范围不同：
+
+    1. **按城市按名搜**。够用的时候最省事，但它会把全城同名分店一起端出来。
+    2. **绕着当天有坐标的景点做周边搜**（`around`）。这是更接近真相的范围——
+       这些店名本来就是引擎按当天景点周边搜出来的。实测「绿柳居」全城 8 家
+       同分，绕着夫子庙搜只有一家。第一处锚点给出**明确**答案就停。
+
+    每轮的判据都是四道关：
 
     1. **同城**（adcode 前四位）——搜到别的城市的同名店是最危险的一种错，
        坐标差几百公里，而名字一模一样。
     2. **是吃饭的地方**（高德一级类型码 05）。
     3. **名字够像**（`name_score` ≥ 及格线）。
     4. **没有并列第一**——并列就是不唯一，不猜。通用菜名（「鸭血粉丝汤」）
-       会搜出一串同名小店，全部并列，于是留空。**这条是这套判据的主力。**
+       会搜出一串同名小店，全部并列，于是留空。
     """
-    from lushu.domain.align import MATCH_SCORE_THRESHOLD, name_score
-
     if not slot.title.strip():
         return MealFix(slot, reason="这一项没有名字，无从查起")
     if not slot.city_name.strip():
@@ -165,51 +227,100 @@ def resolve_meal(slot: MealSlot, *, search) -> MealFix:
             slot,
             reason=f"「{slot.title}」不像店名（是一串菜名），不去猜——猜错就是导航到别处",
         )
+    def judge(found, *, near: str = "") -> MealFix | None:
+        """一次尝试的判据。定下来就返回结果，定不下来返回 None。"""
+        decision = _decide(slot, found.candidates, near=near)
+        return decision.fix
 
     try:
         found = search(slot.title, slot.city_name)
-    except Exception as exc:  # 网络、额度、限流：都不是「查不到」
+    except PoiSearchError as exc:
+        # **只接住「搜索失败」这一种。** 把 `Exception` 全接掉的话，
+        # 注入进来的搜索函数写错签名也会显示成「高德搜索失败：unexpected
+        # keyword argument」——那是我们的 bug，该炸就炸，不该伪装成网络问题。
         return MealFix(slot, reason=f"高德搜索失败：{exc}")
 
     if not found.candidates:
-        return MealFix(slot, reason="高德没有搜到这个名字（通用菜名常常如此）")
+        city_note = "高德没有搜到这个名字（通用菜名常常如此）"
+    else:
+        hit = judge(found)
+        if hit is not None:
+            return hit
+        city_note = _decide(slot, found.candidates).reason
 
-    in_city = [poi for poi in found.candidates if poi.in_city(slot.city_adcode)]
+    # ── 第二轮：绕着当天的景点找 ──────────────────────────────
+    if around is None or not slot.anchors:
+        return MealFix(slot, reason=city_note)
+
+    tried: list[str] = []
+    for anchor in slot.anchors:
+        tried.append(anchor.title)
+        try:
+            nearby = around(
+                slot.title, lat_gcj02=anchor.lat_gcj02, lng_gcj02=anchor.lng_gcj02
+            )
+        except PoiSearchError as exc:
+            return MealFix(slot, reason=f"{city_note}；周边搜索失败：{exc}")
+        hit = judge(nearby, near=anchor.title)
+        if hit is not None:
+            return hit
+
+    return MealFix(
+        slot,
+        reason=f"{city_note}；绕着当天的 {'、'.join(tried[:3])} 也没找到更明确的",
+    )
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """一次尝试的结论：定下来给结果，定不下来给原因。"""
+
+    fix: MealFix | None = None
+    reason: str = ""
+
+
+def _decide(slot: MealSlot, candidates, *, near: str = "") -> _Decision:
+    """四道关，一次算完，结论与理由出自同一处。
+
+    **只有这一处做判据。** 先前「算结果」与「算理由」各写了一遍，于是
+    「对上了但高德没给坐标」只有一边知道——报出来的原因成了「有 1 家同分的店」
+    （一家怎么会同分）。一处判断不能有两个答案，算两遍迟早分岔。
+    """
+    from lushu.domain.align import MATCH_SCORE_THRESHOLD, name_score
+
+    in_city = [poi for poi in candidates if poi.in_city(slot.city_adcode)]
     if not in_city:
-        return MealFix(slot, reason=f"搜到的都不在{slot.city_name}，不能拿别的城市的同名店顶上")
+        return _Decision(reason=f"搜到的都不在{slot.city_name}，不能拿别的城市的同名店顶上")
+    food = [poi for poi in in_city if _is_food(poi)]
+    if not food:
+        return _Decision(reason="搜到的都不是吃饭的地方")
 
     scored = sorted(
-        ((name_score(slot.title, poi.name), poi) for poi in in_city if _is_food(poi)),
-        key=lambda pair: -pair[0],
+        ((name_score(slot.title, poi.name), poi) for poi in food), key=lambda pair: -pair[0]
     )
-    if not scored:
-        return MealFix(slot, reason="搜到的都不是吃饭的地方")
-
     best_score, best = scored[0]
     if best_score < MATCH_SCORE_THRESHOLD:
-        return MealFix(
-            slot,
-            matched_name=best.name,
-            reason=f"搜到的最像的是「{best.name}」，但名字差得远（{best_score}）",
-        )
-    ties = [poi.name for score, poi in scored if score == best_score]
+        return _Decision(reason=f"搜到的最像的是「{best.name}」，但名字差得远（{best_score}）")
+
+    ties = [poi for score, poi in scored if score == best_score]
     if len(ties) > 1:
-        return MealFix(
-            slot,
-            matched_name=ties[0],
-            reason=f"有 {len(ties)} 家同分的店（「{ties[0]}」等），分不出是哪一家——"
-            "通用菜名基本都会卡在这里",
+        return _Decision(
+            reason=f"有 {len(ties)} 家同分的店（「{ties[0].name}」等），分不出是哪一家——"
+            "通用菜名基本都会卡在这里"
         )
 
     if best.lat_gcj02 is None or best.lng_gcj02 is None:
-        return MealFix(slot, matched_name=best.name, reason=f"对上了「{best.name}」，但高德没给坐标")
-    return MealFix(
-        slot,
-        matched_name=best.name,
-        lat_gcj02=best.lat_gcj02,
-        lng_gcj02=best.lng_gcj02,
-        address=best.address,
-        reason=f"名字命中（{best_score}）",
+        return _Decision(reason=f"对上了「{best.name}」，但高德没给坐标")
+    return _Decision(
+        fix=MealFix(
+            slot,
+            matched_name=best.name,
+            lat_gcj02=best.lat_gcj02,
+            lng_gcj02=best.lng_gcj02,
+            address=best.address,
+            reason=f"名字命中（{best_score}）",
+            near=near,
+        )
     )
 
 
@@ -247,6 +358,7 @@ def plan_fill(
     slots: Sequence[MealSlot],
     *,
     search,
+    around=None,
     pause: float = PAUSE_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
 ) -> FillReport:
@@ -258,7 +370,7 @@ def plan_fill(
     for index, slot in enumerate(slots):
         if index and pause:
             sleep(pause)
-        fixes.append(resolve_meal(slot, search=search))
+        fixes.append(resolve_meal(slot, search=search, around=around))
     return FillReport(fixes=fixes)
 
 
