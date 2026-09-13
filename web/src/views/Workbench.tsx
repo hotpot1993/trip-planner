@@ -15,10 +15,12 @@ import { Annotate } from '@/views/workbench/Annotate'
 import { Alignments } from '@/views/workbench/Alignments'
 import { Evaluation } from '@/views/workbench/Evaluation'
 import { Extractions } from '@/views/workbench/Extractions'
+import { Reviews } from '@/views/workbench/Reviews'
 
 const TAB_LABELS: Record<WorkbenchTab, string> = {
   annotate: '标注',
   alignments: '待对齐',
+  reviews: '预约复核',
   extractions: '提纯',
   eval: '评测',
 }
@@ -123,6 +125,7 @@ export function Workbench({ tab }: { tab: WorkbenchTab }) {
 
       {tab === 'annotate' ? <Annotate key={nonce} /> : null}
       {tab === 'alignments' ? <Alignments key={nonce} /> : null}
+      {tab === 'reviews' ? <Reviews key={nonce} /> : null}
       {tab === 'extractions' ? <Extractions key={nonce} /> : null}
       {tab === 'eval' ? <Evaluation key={nonce} /> : null}
     </div>

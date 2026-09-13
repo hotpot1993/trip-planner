@@ -7,9 +7,15 @@
 
 import { useEffect, useState } from 'react'
 
-export type WorkbenchTab = 'annotate' | 'alignments' | 'extractions' | 'eval'
+export type WorkbenchTab = 'annotate' | 'alignments' | 'reviews' | 'extractions' | 'eval'
 
-export const WORKBENCH_TABS: WorkbenchTab[] = ['annotate', 'alignments', 'extractions', 'eval']
+export const WORKBENCH_TABS: WorkbenchTab[] = [
+  'annotate',
+  'alignments',
+  'reviews',
+  'extractions',
+  'eval',
+]
 
 export type Route =
   | { name: 'trips' }

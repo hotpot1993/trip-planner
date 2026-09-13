@@ -339,6 +339,38 @@ export const fetchTripBooking = (tripId: string): Promise<TripBookingOut> =>
 export const bookingCalendarUrl = (tripId: string): string =>
   `/api/trips/${encodeURIComponent(tripId)}/booking.ics`
 
+// ─── 预约规则复核（工作台的第三类队列）─────────────────────────
+
+export interface BookingRuleOut {
+  poi_id: string
+  poi_name: string
+  status: 'draft' | 'reviewed'
+  booking_required: boolean
+  advance_days: number | null
+  release_time: string | null
+  channels: BookingChannelOut[]
+  requires_real_name: boolean | null
+  id_required_note: string | null
+  closed_days_weekdays: number[]
+  evidence_url: string | null
+  reviewed_at: string | null
+  verify_due_at: string | null
+  reviewer_note: string | null
+  /** 体检结果与规则一起返回：复核是「看着体检结果签字」。 */
+  errors: string[]
+  warnings: string[]
+}
+
+export const listBookingRules = (pendingOnly = false): Promise<BookingRuleOut[]> =>
+  request(`/api/workbench/booking-rules?pending_only=${pendingOnly ? 'true' : 'false'}`)
+
+/** 复核或撤回复核。有 error 时服务端会 422，带上体检文案。 */
+export const reviewBookingRule = (
+  poiId: string,
+  payload: { evidence_url?: string; note?: string; revoke?: boolean } = {},
+): Promise<BookingRuleOut> =>
+  request(`/api/workbench/booking-rules/${encodeURIComponent(poiId)}/review`, jsonInit(payload))
+
 // ─── 数据工作台 ──────────────────────────────────────────────
 
 export type Polarity = 'avoid' | 'highlight'
