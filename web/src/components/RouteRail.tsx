@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 
+import { hrefFor } from '@/lib/router'
 import type { DayOut, ItemOut, StayOut, TransferOut } from '@/lib/api'
 import { kindLabel, monthDay, weekday } from '@/lib/format'
 
@@ -169,9 +170,28 @@ function StationBody({
   return (
     <div className="pb-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-display text-lg leading-tight">{stay.city_name}</span>
+        {/* 城市名链到城市页：那是最自然的入口——读到「西安 3 天」时，
+            下一个问题就是「西安有什么可去的」。 */}
+        {stay.city_adcode ? (
+          <a
+            href={hrefFor({ name: 'city', adcode: stay.city_adcode, cityName: stay.city_name })}
+            className="font-display text-lg leading-tight text-ink underline decoration-rule decoration-1 underline-offset-4 hover:decoration-azurite"
+          >
+            {stay.city_name}
+          </a>
+        ) : (
+          <span className="font-display text-lg leading-tight">{stay.city_name}</span>
+        )}
         <span className="text-xs text-ink-3">{stationLabel(index)}</span>
         <span className="data text-xs text-ink-3">{stay.stay_days} 天</span>
+        {stay.city_adcode ? (
+          <a
+            href={hrefFor({ name: 'city', adcode: stay.city_adcode, cityName: stay.city_name })}
+            className="text-xs text-ink-3 no-underline hover:text-ink"
+          >
+            有哪些可去的 →
+          </a>
+        ) : null}
       </div>
     </div>
   )

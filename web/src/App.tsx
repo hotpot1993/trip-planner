@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { hrefFor, useRoute } from '@/lib/router'
+import { CityCandidates } from '@/views/CityCandidates'
 import { Status } from '@/views/Status'
 import { TripDetail } from '@/views/TripDetail'
 import { TripList } from '@/views/TripList'
@@ -8,7 +9,7 @@ import { Workbench } from '@/views/Workbench'
 
 export default function App() {
   const route = useRoute()
-  const wide = route.name === 'workbench'
+  const wide = route.name === 'workbench' || route.name === 'city'
 
   return (
     <div className="min-h-dvh">
@@ -26,7 +27,7 @@ export default function App() {
             <NavLink href={hrefFor({ name: 'trips' })} active={route.name !== 'status' && !wide}>
               行程
             </NavLink>
-            <NavLink href={hrefFor({ name: 'workbench', tab: 'annotate' })} active={wide}>
+            <NavLink href={hrefFor({ name: 'workbench', tab: 'annotate' })} active={route.name === 'workbench'}>
               数据工作台
             </NavLink>
             <NavLink href={hrefFor({ name: 'status' })} active={route.name === 'status'}>
@@ -44,6 +45,9 @@ export default function App() {
       >
         {route.name === 'trips' ? <TripList /> : null}
         {route.name === 'trip' ? <TripDetail tripId={route.tripId} /> : null}
+        {route.name === 'city' ? (
+          <CityCandidates adcode={route.adcode} name={route.cityName} />
+        ) : null}
         {route.name === 'workbench' ? <Workbench tab={route.tab} /> : null}
         {route.name === 'status' ? <Status /> : null}
       </main>

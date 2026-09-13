@@ -20,6 +20,7 @@ export const WORKBENCH_TABS: WorkbenchTab[] = [
 export type Route =
   | { name: 'trips' }
   | { name: 'trip'; tripId: string }
+  | { name: 'city'; adcode: string; cityName?: string }
   | { name: 'workbench'; tab: WorkbenchTab }
   | { name: 'status' }
 
@@ -30,6 +31,11 @@ export function parseHash(hash: string): Route {
   const [head, second] = segments
   if (head === 'trips' && second) {
     return { name: 'trip', tripId: decodeURIComponent(second) }
+  }
+  if (head === 'cities' && second) {
+    // 城市名只用于显示与回落搜高德，adcode 才是身份
+    const cityName = segments[2] ? decodeURIComponent(segments[2]) : undefined
+    return { name: 'city', adcode: decodeURIComponent(second), cityName }
   }
   if (head === 'workbench') {
     // 队列可以直链：把「待对齐」的地址发给自己，回来就在那一页
@@ -46,6 +52,10 @@ export function hrefFor(route: Route): string {
   switch (route.name) {
     case 'trip':
       return `#/trips/${encodeURIComponent(route.tripId)}`
+    case 'city':
+      return `#/cities/${encodeURIComponent(route.adcode)}${
+        route.cityName ? `/${encodeURIComponent(route.cityName)}` : ''
+      }`
     case 'workbench':
       return `#/workbench/${route.tab}`
     case 'status':

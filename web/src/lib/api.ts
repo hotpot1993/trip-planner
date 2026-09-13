@@ -373,6 +373,58 @@ export const reviewBookingRule = (
 ): Promise<BookingRuleOut> =>
   request(`/api/workbench/booking-rules/${encodeURIComponent(poiId)}/review`, jsonInit(payload))
 
+// ─── 候选池 ──────────────────────────────────────────────────
+
+export interface ClaimBriefOut {
+  claim_id: string
+  text: string
+  facet: string
+  confidence: 'high' | 'single_source'
+  independent_source_count: number
+  evidence_count: number
+  verify_due_at: string | null
+}
+
+export interface CandidateOut {
+  poi_id: string
+  name: string
+  /** knowledge = 网友真的写过；amap = 只是地图上有。两者不能混。 */
+  source: 'knowledge' | 'amap'
+  address: string | null
+  lat_gcj02: number | null
+  lng_gcj02: number | null
+  rating: number | null
+  open_time: string | null
+  highlights: ClaimBriefOut[]
+  avoids: ClaimBriefOut[]
+  claim_count: number
+  high_confidence_count: number
+  recommended: boolean
+  booking_days: number | null
+  booking_time: string | null
+}
+
+export interface CityPoolOut {
+  city_adcode: string
+  candidates: CandidateOut[]
+  recommended_count: number
+  /** 知识库覆盖够不够。不够时界面要说实话。 */
+  covered: boolean
+  amap_error: string | null
+}
+
+/** `name` 只在知识库没覆盖、需要回落搜高德时才要用。 */
+export const fetchCityPool = (
+  adcode: string,
+  options: { name?: string; fill?: boolean } = {},
+): Promise<CityPoolOut> => {
+  const params = new URLSearchParams()
+  if (options.name) params.set('name', options.name)
+  if (options.fill) params.set('fill', 'true')
+  const query = params.toString()
+  return request(`/api/cities/${encodeURIComponent(adcode)}/candidates${query ? `?${query}` : ''}`)
+}
+
 // ─── 数据工作台 ──────────────────────────────────────────────
 
 export type Polarity = 'avoid' | 'highlight'
