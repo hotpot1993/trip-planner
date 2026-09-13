@@ -8,6 +8,7 @@ import {
   ApiError,
   confirmTrip,
   deleteTrip,
+  fetchTripBooking,
   fetchTripCoverage,
   fetchTripInsights,
   fetchTripWeather,
@@ -15,6 +16,7 @@ import {
   refreshTransfers,
   roadbookUrl,
   updateStays,
+  type TripBookingOut,
   type TripCoverageOut,
   type TripDetailOut,
   type TripInsightsOut,
@@ -33,6 +35,8 @@ export function TripDetail({ tripId }: { tripId: string }) {
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [insights, setInsights] = useState<TripInsightsOut | null>(null)
   const [coverage, setCoverage] = useState<TripCoverageOut | null>(null)
+  const [booking, setBooking] = useState<TripBookingOut | null>(null)
+  const [bookingError, setBookingError] = useState<string | null>(null)
 
   const reload = useCallback(() => {
     setError(null)
@@ -50,6 +54,17 @@ export function TripDetail({ tripId }: { tripId: string }) {
     fetchTripCoverage(tripId)
       .then(setCoverage)
       .catch(() => setCoverage(null))
+    // 预约清单在行程页取一次，两处用：顶部面板与每个天项上的标注。
+    // 各自取的话，同一份清单会有两份状态，迟早不一致。
+    fetchTripBooking(tripId)
+      .then((payload) => {
+        setBooking(payload)
+        setBookingError(null)
+      })
+      .catch((cause: unknown) => {
+        setBooking(null)
+        setBookingError(cause instanceof Error ? cause.message : String(cause))
+      })
   }, [tripId])
 
   useEffect(reload, [reload])
@@ -87,7 +102,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
 
       {/* 预约排在行程前面：时点比行程本身更紧急。
           用户打开这份行程时真正可能已经晚了的事，是某个景点的票几天前放过了。 */}
-      <BookingPanel tripId={trip.id} />
+      <BookingPanel data={booking} error={bookingError} tripId={trip.id} />
 
       <section>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
@@ -105,6 +120,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
           stays={trip.stays}
           transfers={trip.transfers}
           insights={insights ?? undefined}
+          bookings={booking?.alerts ?? []}
         />
       </section>
 

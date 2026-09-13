@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 
 import { hrefFor } from '@/lib/router'
 import type {
+  BookingAlertOut,
   DayOut,
   InsightOut,
   ItemInsightsOut,
@@ -61,12 +62,20 @@ export function RouteRail({
   stays,
   transfers = [],
   insights,
+  bookings = [],
 }: {
   stays: StayOut[]
   transfers?: TransferOut[]
   /** 按 POI 分组的软经验。不注入模型，生成后挂载（设计 5.4）。 */
   insights?: TripInsightsOut
+  /**
+   * 预约清单。设计 6.2 的第一条触达方式是「行程卡片上的醒目标注，
+   * 含预约渠道与提前天数」——读到「09:00 故宫博物院」时，
+   * 人要能立刻看见这件事还要抢票，而不是等滑到页顶。
+   */
+  bookings?: BookingAlertOut[]
 }) {
+  const bookingByPoi = new Map(bookings.map((item) => [item.poi_id, item]))
   const nodes = buildNodes(stays)
 
   if (nodes.length === 0) {
@@ -106,6 +115,7 @@ export function RouteRail({
             isLast={index === nodes.length - 1}
             transfers={node.kind === 'day' ? (byDay.get(node.dayIndex) ?? []) : []}
             insights={insights}
+            bookings={bookingByPoi}
           />
         ))}
       </ol>
@@ -118,11 +128,13 @@ function RailRow({
   isLast,
   transfers,
   insights,
+  bookings,
 }: {
   node: RailNode
   isLast: boolean
   transfers: TransferOut[]
   insights?: TripInsightsOut
+  bookings: Map<string, BookingAlertOut>
 }) {
   const hasContent = node.kind === 'day' ? node.day.items.length > 0 || transfers.length > 0 : true
 
@@ -135,7 +147,12 @@ function RailRow({
       {node.kind === 'station' ? (
         <StationBody node={node} />
       ) : (
-        <DayBody day={node.day} transfers={transfers} insights={insights} />
+        <DayBody
+          day={node.day}
+          transfers={transfers}
+          insights={insights}
+          bookings={bookings}
+        />
       )}
     </li>
   )
@@ -215,10 +232,12 @@ function DayBody({
   day,
   transfers,
   insights,
+  bookings,
 }: {
   day: DayOut
   transfers: TransferOut[]
   insights?: TripInsightsOut
+  bookings: Map<string, BookingAlertOut>
 }) {
   const hasItems = day.items.length > 0
 
@@ -243,6 +262,7 @@ function DayBody({
               key={`${day.date}-${i}`}
               item={item}
               insights={item.poi_id ? insights?.by_poi[item.poi_id] : undefined}
+              booking={item.poi_id ? bookings.get(item.poi_id) : undefined}
             />
           ))}
         </ul>
@@ -353,7 +373,15 @@ function modeLabel(mode: string): string {
   }
 }
 
-function ItemRow({ item, insights }: { item: ItemOut; insights?: ItemInsightsOut }) {
+function ItemRow({
+  item,
+  insights,
+  booking,
+}: {
+  item: ItemOut
+  insights?: ItemInsightsOut
+  booking?: BookingAlertOut
+}) {
   const [open, setOpen] = useState(false)
 
   // 景点没有实体主键，说明它还没对上高德 POI（ADR-0002），要么是待对齐、
@@ -395,6 +423,33 @@ function ItemRow({ item, insights }: { item: ItemOut; insights?: ItemInsightsOut
               <span className="text-malachite">{insights!.highlights.length} 打卡</span>
             ) : null}
           </button>
+        ) : null}
+
+        {/* 设计 6.2 的第一条触达方式：**行程卡片上的醒目标注，含提前天数**。
+            读到「09:00 故宫博物院」时人要能立刻看见这件事还要抢票，
+            而不是等滑到页顶。朱砂只标「会让计划落空」的一类——
+            放票日已过正是那三类之一。
+
+            文案来自领域层算好的 headline，**界面不自己拼**；这里只决定
+            它占多宽——官方没公布口径时那句话很长，整个铺开会把时间轴挤散。
+            悬停看全文，点击看上面的完整清单。 */}
+        {booking ? (
+          <span
+            className={[
+              'max-w-[15rem] shrink-0 truncate rounded-sm px-1.5 py-0.5 text-xs',
+              booking.urgency === 'overdue'
+                ? 'bg-cinnabar-soft text-cinnabar'
+                : 'bg-azurite-soft text-azurite',
+            ].join(' ')}
+            title={[
+              booking.headline,
+              booking.channels.map((channel) => channel.name).join('、'),
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          >
+            {booking.headline}
+          </span>
         ) : null}
 
         {item.rating !== null ? (

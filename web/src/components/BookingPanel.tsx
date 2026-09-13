@@ -1,8 +1,5 @@
-import { useEffect, useState } from 'react'
-
 import {
   bookingCalendarUrl,
-  fetchTripBooking,
   type BookingAlertOut,
   type TripBookingOut,
   type Urgency,
@@ -24,23 +21,22 @@ import {
  * 规则是草案状态时提醒会被跳过（Q10 的硬门禁）；规则库里压根没有这个景点时
  * 我们也不知道它要不要预约。两种都要说出来，不能让空清单冒充「不用担心」。
  */
-export function BookingPanel({ tripId }: { tripId: string }) {
-  const [data, setData] = useState<TripBookingOut | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    fetchTripBooking(tripId)
-      .then((payload) => {
-        if (alive) setData(payload)
-      })
-      .catch((cause: unknown) => {
-        if (alive) setError(cause instanceof Error ? cause.message : String(cause))
-      })
-    return () => {
-      alive = false
-    }
-  }, [tripId])
+/**
+ * 预约清单。
+ *
+ * 数据由行程页取好传进来（它同时要把预约标到天项上）。
+ * 原先这里自己取，于是同一份清单有两处各自请求、各自缓存——
+ * 两边的状态迟早会不一致。
+ */
+export function BookingPanel({
+  data,
+  error,
+  tripId,
+}: {
+  data: TripBookingOut | null
+  error: string | null
+  tripId: string
+}) {
 
   if (error) {
     return (
