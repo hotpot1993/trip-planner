@@ -38,6 +38,9 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    # 把真正推上去的标签名传给冒烟那一步，免得在那边猜 sha 截几位
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: 取源码
         uses: actions/checkout@v7
@@ -78,3 +81,57 @@ jobs:
           # 缓存放在 Actions 的缓存里，下次构建前端依赖与 pip 都能快一截
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # 把刚推上去的镜像真跑一遍。构建成功不等于跑得起来：入口脚本有没有执行位、
+  # 前端有没有被挂上、库建不建得出来、健康检查探得通不通，只有起了才知道。
+  #
+  # 这一步在 push 之后，所以它要是红了，刚发布出去的那个 tag 就是坏的 ——
+  # 修好再推一次会覆盖它。
+  smoke:
+    needs: image
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉下来跑一遍
+        run: |
+          set -euo pipefail
+          IMAGE=$(echo "${{ needs.image.outputs.tags }}" | head -n1)
+          echo "镜像：$IMAGE"
+          docker pull "$IMAGE"
+
+          # 不挂卷、不给任何 Key —— 这就是 NAS 上第一次起来的样子
+          docker run -d --name lushu -p 8756:8756 "$IMAGE"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS -o health.json http://127.0.0.1:8756/api/health; then break; fi
+            sleep 2
+          done
+
+          echo "--- /api/health ---"
+          jq . health.json
+          jq -e '.status == "ok"' health.json > /dev/null
+          jq -e '.database.exists == true' health.json > /dev/null
+          jq -e '.engine.available == true' health.json > /dev/null
+
+          echo "--- 首页必须是前端，不是那句「前端尚未构建」---"
+          curl -fsS http://127.0.0.1:8756/ -o index.html
+          grep -q 'id="root"' index.html
+          grep -q '/assets/' index.html
+
+          echo "--- 数据目录：库建出来了没有、车站名表补上了没有 ---"
+          docker exec lushu ls -l /app/data
+          docker exec lushu test -f /app/data/lushu.db
+          docker exec lushu test -f /app/data/rail_stations.json
+
+          echo "--- 健康检查自己怎么说（别让 NAS 上一直显示 unhealthy）---"
+          for _ in $(seq 1 40); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' lushu)
+            echo "  $status"
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && break
+            sleep 3
+          done
+          docker inspect --format '{{.State.Health.Status}}' lushu | grep -q '^healthy$'
+
+          echo "--- 启动日志 ---"
+          docker logs lushu
