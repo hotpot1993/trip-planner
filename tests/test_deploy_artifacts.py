@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -63,25 +64,20 @@ class TestNothingPrivateEntersTheImage:
         assert name in ignore_lines, f".dockerignore 没排掉 {name}，真 Key 会进镜像"
 
     def test_the_real_database_is_excluded(self, ignore_lines: list[str]) -> None:
-        assert "data/*" in ignore_lines, "data/ 下的运行期数据没有被整目录排掉"
+        assert "data/" in ignore_lines, "真实库在 data/ 下，整目录都得排掉"
 
-    def test_no_runtime_data_is_re_included(self, ignore_lines: list[str]) -> None:
-        re_included = [line for line in ignore_lines if line.startswith("!data/")]
-        assert re_included == ["!data/rail_stations.json"], (
-            f"data/ 下只该放行车站名表，现在是 {re_included}"
-        )
+    def test_nothing_under_data_is_re_included(self, ignore_lines: list[str]) -> None:
+        """一个例外都不留。
 
-    def test_the_station_table_is_allowed_back_in_with_the_right_pattern(
-        self, ignore_lines: list[str]
-    ) -> None:
-        """必须是 `data/*` 再接 `!data/rail_stations.json`，不能写 `data/`。
+        这里曾经放行过 `!data/rail_stations.json`（构建要用的车站名表）。那种
+        写法有个坑：父目录一旦被排除，`!` 再想放行它里面的文件就是无效的，
+        写成 `data/` 便静默失效，然后构建以「文件不存在」失败。
 
-        父目录被排除之后，`!` 再想放行它里面的文件是无效的 —— 写成 `data/`
-        的话这条放行会静默失效，然后构建以「文件不存在」失败。
+        现在那份表挪到了 `lushu/seed/` 跟版本库一起走，这里也就没有例外可留。
+        没有例外，就没有那条规则可以踩。
         """
-        assert "data/*" in ignore_lines
-        assert ignore_lines.index("data/*") < ignore_lines.index("!data/rail_stations.json")
-        assert "data/" not in ignore_lines
+        re_included = [line for line in ignore_lines if line.startswith("!data")]
+        assert not re_included, f"data/ 下不该有任何例外，现在是 {re_included}"
 
     def test_host_node_modules_are_excluded(self, ignore_lines: list[str]) -> None:
         """宿主机是 Windows，装的是 win32 二进制，拷进 Linux 构建镜像会炸。"""
@@ -119,9 +115,11 @@ class TestRuntimeSettingsThatFailSilently:
             assert "tomllib" in line, "依赖清单得从 pyproject.toml 读，不能另抄一份"
             assert not re.search(r"pip install[^&|]*?\s\.(\s|$)", line)
 
-    def test_the_station_table_is_seeded_outside_the_mount_point(self, dockerfile: str) -> None:
-        """放 /app/data 会被卷盖住，等于没放。"""
-        assert "COPY data/rail_stations.json ./seed/rail_stations.json" in dockerfile
+    def test_the_station_table_lives_outside_the_mount_point(self) -> None:
+        """放在 /app/data 下会被卷盖住，等于没放。"""
+        assert (ROOT / "lushu" / "seed" / "rail_stations.json").is_file(), (
+            "车站名表不在 lushu/seed/ 下，镜像会缺料"
+        )
 
     def test_the_entrypoint_is_made_executable(self, dockerfile: str) -> None:
         """从 Windows 构建时 COPY 过来的文件不一定带执行位，这行是必须的。"""
@@ -135,7 +133,8 @@ class TestRuntimeSettingsThatFailSilently:
     def test_the_entrypoint_writes_into_the_data_directory(self) -> None:
         body = ENTRYPOINT.read_text(encoding="utf-8")
         assert 'DATA_DIR="${LUSHU_DATA_DIR:-/app/data}"' in body
-        assert "/app/seed/" in body
+        assert 'SEED_DIR="/app/lushu/seed"' in body
+        assert 'cp "$SEED_DIR/$name" "$DATA_DIR/$name"' in body
 
 
 class TestTheEntrypointSurvivesLinux:
@@ -187,25 +186,44 @@ class TestThePortIsOneNumberInThreePlaces:
         )
 
 
+def _copy_sources(dockerfile: str) -> list[str]:
+    """Dockerfile 里从构建上下文拷的源路径（不含 --from 那几条）。"""
+    sources: list[str] = []
+    for line in dockerfile.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("COPY ") or "--from=" in stripped:
+            continue
+        parts = stripped.split()[1:]
+        sources.extend(parts[:-1])  # 最后一个是目的路径
+    return sources
+
+
 class TestEverythingCopiedExists:
     def test_copy_sources_are_present_in_the_context(self, dockerfile: str) -> None:
-        sources: list[str] = []
-        for line in dockerfile.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("COPY ") or "--from=" in stripped:
-                continue
-            parts = stripped.split()[1:]
-            sources.extend(parts[:-1])  # 最后一个是目的路径
-
+        sources = _copy_sources(dockerfile)
         assert sources, "没解析到任何 COPY，这条测试自己失效了"
-
         missing = [name for name in sources if not (ROOT / name).exists()]
-        if missing == ["data/rail_stations.json"]:
-            pytest.skip(
-                "data/rail_stations.json 不在版本库里（.gitignore 的 data/ 排掉了），"
-                "在 NAS 上从 clone 出来的仓库构建时也会缺它 —— 见 docs/DEPLOY.md"
-            )
         assert not missing, f"构建上下文里没有这些路径：{missing}"
+
+    def test_copy_sources_are_all_under_version_control(self, dockerfile: str) -> None:
+        """构建要用的东西必须在版本库里。
+
+        GitHub Actions 是从 clone 出来的仓库构建的，工作区里只有被跟踪的文件。
+        一个文件要是被 .gitignore 挡着，本机构建一切正常、CI 上却以「文件不存在」
+        失败 —— 车站名表就踩过这个坑，现在挪进了 `lushu/seed/`。
+
+        这里直接问 git 自己，不另写一份忽略规则：规则只能有一处，
+        多写一份迟早两处不一致。
+        """
+        ignored = [
+            name
+            for name in _copy_sources(dockerfile)
+            if subprocess.run(
+                ["git", "check-ignore", "-q", name], cwd=ROOT, capture_output=True
+            ).returncode
+            == 0
+        ]
+        assert not ignored, f"这些构建要用的路径被 .gitignore 挡着，CI 上会缺：{ignored}"
 
 
 class TestComposeKeepsDataOnTheNas:
@@ -217,3 +235,22 @@ class TestComposeKeepsDataOnTheNas:
         body = COMPOSE.read_text(encoding="utf-8")
         assert "restart: unless-stopped" in body
         assert "max-size" in body, "NAS 上日志不限长会一直堆下去"
+
+
+class TestTheImageNameIsOneStringInSeveralPlaces:
+    """镜像名分布在三个文件里，对不上就是「拉不到镜像」这种一眼看不出原因的事。
+
+    以 workflow 为准：真正决定推到哪个仓库的是它，其余几处跟着它走。
+    """
+
+    def test_compose_and_docs_use_the_name_the_workflow_pushes(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "docker.yml").read_text(encoding="utf-8")
+        pushed = re.search(r"^\s*images:\s*(\S+)", workflow, flags=re.MULTILINE)
+        assert pushed, "workflow 里没解析出 images:，这条测试自己失效了"
+        name = pushed.group(1)
+
+        assert f"image: {name}:" in COMPOSE.read_text(encoding="utf-8"), (
+            f"compose 拉的不是 workflow 推的那个名字（{name}）"
+        )
+        for path in (ROOT / "README.md", ROOT / "docs" / "DEPLOY.md"):
+            assert name in path.read_text(encoding="utf-8"), f"{path.name} 里的镜像名不是 {name}"

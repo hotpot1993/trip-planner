@@ -1,15 +1,17 @@
 # 飞牛 NAS 部署用。飞牛「容器」应用里可以直接把这份粘进 Compose 项目。
 #
-# 用之前要改三处：
-#   1. image 里的 <账号> 换成你的 Docker Hub 用户名
-#   2. 三个 Key 与 LLM 那一段
-#   3. volumes 左边换成 NAS 上的真实目录，例如 /vol1/1000/docker/lushu/data
+# 用之前要改两处：
+#   1. 四个 Key 与 LLM 那一段
+#   2. volumes 左边换成 NAS 上的真实目录，例如 /vol1/1000/docker/lushu/data
+#
+# image 由 .github/workflows/docker.yml 构建并推送，两边名字必须一致
+# （tests/test_deploy_artifacts.py 盯着这件事）。
 #
 # 完整说明见 docs/DEPLOY.md。
 
 services:
   lushu:
-    image: <账号>/lushu:latest
+    image: hotpot1993/trip-planner:latest
     container_name: lushu
     restart: unless-stopped
 

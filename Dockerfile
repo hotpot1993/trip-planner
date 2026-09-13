@@ -2,14 +2,15 @@
 #
 # 两段构建：Node 只用来产出前端静态文件，运行镜像里没有 Node 也没有 npm。
 #
-# 在仓库根目录执行（末尾那个点是构建上下文，必须是仓库根）：
-#   docker build -t <账号>/lushu:latest .
+# 平时不用手工构建 —— 推到 master 之后 .github/workflows/docker.yml 会构建
+# 并推送到 hotpot1993/trip-planner。手工构建的话在仓库根目录执行：
+#   docker build -t hotpot1993/trip-planner:latest .
 #
 # 构建参数是为国内网络准备的，默认值就是官方源：
 #   docker build \
 #     --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
 #     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-#     -t <账号>/lushu:latest .
+#     -t hotpot1993/trip-planner:latest .
 
 
 # ─── 第一段：构建前端 ────────────────────────────────────────────
@@ -59,7 +60,7 @@ WORKDIR /app
 # 全部找错地方 —— 前端不挂载、库建在 site-packages 里，而且都不报错。
 # 代码直接从 /app 跑，ROOT_DIR 才是 /app。
 #
-# 拼行用 chr(10) 而不是 \n：Dockerfile 里反斜杠是转义字符，能不写就不写。
+# 拼行用 chr(10)：Dockerfile 里反斜杠是转义字符，能不写就不写。
 COPY pyproject.toml ./
 RUN python -c "import pathlib,tomllib;pathlib.Path('/tmp/requirements.txt').write_text(chr(10).join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" \
     && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/requirements.txt \
@@ -72,10 +73,9 @@ COPY third_party/ ./third_party/
 # 它不存在的话根路径会返回一句「前端尚未构建」——服务是活的，页面是空的。
 COPY --from=web /build/dist ./web/dist
 
-# 车站名表放在挂载点之外。挂上卷之后 /app/data 会被盖住，放那儿等于没放；
-# 放这里才能在首次启动时补进数据目录（见 deploy/entrypoint.sh）。
-COPY data/rail_stations.json ./seed/rail_stations.json
-
+# 车站名表跟着 `COPY lushu/` 一起进来，落在 /app/lushu/seed/rail_stations.json。
+# 它刻意不在 /app/data 下：挂上卷之后那个目录会被盖住，放那儿等于没放。
+# 首次启动时由 entrypoint 把它补进数据目录。
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

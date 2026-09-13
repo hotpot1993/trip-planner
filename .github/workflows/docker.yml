@@ -1,0 +1,62 @@
+# 每次推到 master 就构建一次镜像并推到 Docker Hub。
+#
+# 需要先配一个仓库 secret（Settings → Secrets and variables → Actions）：
+#   DOCKERHUB_TOKEN  —— Docker Hub 的 Access Token，权限勾 Read & Write
+# 用户名不用配：就是下面的 hotpot1993。
+#
+# 构建的是 linux/amd64，与飞牛那台的架构一致。要出双架构的话把
+# platforms 改成 linux/amd64,linux/arm64 即可（依赖轮子两种架构都验过）。
+
+name: 构建并推送镜像
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# 同一分支上后一次推上来就把前一次取消掉，别排着队空跑
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v7
+
+      - name: 准备 buildx
+        uses: actions/setup-buildx-action@v4
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: hotpot1993
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 算标签
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: hotpot1993/trip-planner
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 缓存放在 Actions 的缓存里，下次构建前端依赖与 pip 都能快一截
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
