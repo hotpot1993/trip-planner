@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "docker.yml"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 COMPOSE = ROOT / "docker-compose.yml"
@@ -237,6 +238,39 @@ class TestComposeKeepsDataOnTheNas:
         assert "max-size" in body, "NAS 上日志不限长会一直堆下去"
 
 
+class TestTheWorkflowActionsAreOnesThatExist:
+    """`uses:` 里的属主写错一个词，报出来的是「repository not found」。
+
+    这个坑已经踩过一次：`setup-buildx-action` 的属主是 `docker`，不是
+    `actions`，于是 CI 在 Set up job 那一步就断了 —— 那是构建之前，
+    连日志都没有几行，一眼看不出是哪里写错。
+    """
+
+    EXPECTED = {
+        ("actions", "checkout"),
+        ("docker", "setup-buildx-action"),
+        ("docker", "login-action"),
+        ("docker", "metadata-action"),
+        ("docker", "build-push-action"),
+    }
+
+    def test_every_action_is_one_we_expect(self) -> None:
+        used = re.findall(r"^\s*uses:\s*(\S+)", WORKFLOW.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        assert used, "没解析到任何 uses:，这条测试自己失效了"
+        for entry in used:
+            owner, _, rest = entry.partition("/")
+            repository = rest.split("@")[0]
+            assert (owner, repository) in self.EXPECTED, (
+                f"{entry} 不在预期清单里。属主写错的话，CI 会停在 Set up job，"
+                f"报「Unable to resolve action」"
+            )
+
+    def test_every_action_is_pinned(self) -> None:
+        used = re.findall(r"^\s*uses:\s*(\S+)", WORKFLOW.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        unpinned = [entry for entry in used if "@" not in entry]
+        assert not unpinned, f"这些 action 没钉版本，上游一改就跟着变：{unpinned}"
+
+
 class TestTheImageNameIsOneStringInSeveralPlaces:
     """镜像名分布在三个文件里，对不上就是「拉不到镜像」这种一眼看不出原因的事。
 
@@ -244,7 +278,7 @@ class TestTheImageNameIsOneStringInSeveralPlaces:
     """
 
     def test_compose_and_docs_use_the_name_the_workflow_pushes(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "docker.yml").read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
         pushed = re.search(r"^\s*images:\s*(\S+)", workflow, flags=re.MULTILINE)
         assert pushed, "workflow 里没解析出 images:，这条测试自己失效了"
         name = pushed.group(1)
