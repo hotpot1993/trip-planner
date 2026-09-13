@@ -50,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_pipeline(sub)
     _register_eval(sub)
     _register_booking(sub)
+    _register_export(sub)
 
     args = parser.parse_args(argv)
     if not args.command:
@@ -242,6 +243,91 @@ def _register_booking(sub) -> None:
     ics.set_defaults(_handler=_cmd_booking_ics)
 
     booking.set_defaults(_handler=lambda _args: _usage(booking))
+
+
+def _register_export(sub) -> None:
+    export = sub.add_parser("export", help="把行程导出成单个 HTML 路书")
+    export.add_argument("trip_id", nargs="?", help="行程 id，不给就列出可选行程")
+    export.add_argument("--out", type=Path, help="输出路径，默认 data/<trip_id>.html")
+    export.add_argument("--check", action="store_true", help="只跑契约校验，不写文件")
+    export.set_defaults(_handler=_cmd_export)
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """导出单文件 HTML 路书。
+
+    设计第八节说「生成后必须跑一次契约校验，有错误必须修复后重跑」——
+    有错误就**不写文件**：一份到了当地打不开的路书比没有更糟，人会以为带上了。
+    """
+    from lushu.domain.roadbook import errors, validate
+    from lushu.services import roadbook_render as render
+    from lushu.services import roadbook_service
+    from lushu.store import connect
+
+    if not args.trip_id:
+        conn = connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, name, start_date FROM trip ORDER BY created_at DESC LIMIT 20"
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            print("库里还没有行程")
+            return 0
+        print("导出哪一份？把 id 传给 ls export：")
+        for row in rows:
+            print(f"  {row['id']}  {row['name']}  {row['start_date']}")
+        return 0
+
+    try:
+        book, warnings = roadbook_service.assemble(args.trip_id)
+    except ValueError as exc:
+        print(f"装配失败：{exc}")
+        return 1
+
+    problems = validate(book)
+    fatal = errors(problems)
+    print(f"《{book.name}》{book.total_days} 天、{book.item_count} 个天项、"
+          f"{len(book.bookings)} 条预约")
+
+    if warnings:
+        print()
+        for item in warnings:
+            print(f"  ! {item}")
+
+    if problems:
+        print()
+        print("契约校验：")
+        for item in problems:
+            print(f"  {item}")
+
+    if fatal:
+        print()
+        print(f"有 {len(fatal)} 处错误，**没有写出文件**——")
+        print("一份到了当地打不开的路书比没有更糟：人会以为带上了。")
+        return 1
+
+    if args.check:
+        print()
+        print("契约校验通过（没有写文件）")
+        return 0
+
+    html = render.render(book)
+    refs = render.external_resources(html)
+    if refs:
+        print(f"产物里有 {len(refs)} 处会自动加载的外部资源，不能算离线可读")
+        return 1
+
+    target = args.out or (config.EXPORTS_DIR / f"{args.trip_id}.html")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(html, encoding="utf-8")
+
+    print()
+    print(f"已写出 {target}（{target.stat().st_size / 1024:.0f} KB，"
+          f"零外部引用，可离线打开）")
+    print("传手机上就能用：微信发给自己、AirDrop、或者直接拷进文件 App。")
+    return 0
 
 
 def _serve(args: argparse.Namespace) -> int:

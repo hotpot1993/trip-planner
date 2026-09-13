@@ -22,9 +22,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 
-# 相邻两个天项之间，超过这个距离就该给一段文字说明怎么走。
-# 取 800 米：步行十分钟上下，再远一点人就需要知道是打车还是地铁。
-NEEDS_LEG_METRES = 800.0
+# 相邻两个天项之间，超过这个距离就不该再建议步行。
+#
+# 取 1500 米（约二十分钟）：一公里出头的步行在城市里毫不稀奇，
+# 把它标出来只会变成噪声；真正会让人意外的是「写着步行，实际要走半小时」。
+#
+# **这个数必须与 `services/roadbook_service.py` 的 `WALK_LIMIT_M` 一致**——
+# 那边用它决定「多远之外改推地铁或打车」。两边取不同的数，就会出现
+# 「估值器自己产出的路段被契约判为可疑」这种自相矛盾。一处判断只能有一个数字。
+NEEDS_LEG_METRES = 1500.0
 
 
 class Severity(StrEnum):
