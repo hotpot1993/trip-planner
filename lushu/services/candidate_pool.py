@@ -22,9 +22,10 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from lushu.domain.knowledge import Confidence, Polarity
+from lushu.domain.poi import CandidatePoi
 from lushu.services import knowledge_store as ks
 from lushu.store.connection import connect
 
@@ -204,6 +205,157 @@ def city_candidates(
     # 结论多的排前面：那是网友提得最多的地方。同分时按名字，保证结果可复现。
     candidates.sort(key=lambda item: (-item.claim_count, -item.high_confidence_count, item.name))
     return candidates[:limit]
+
+
+def city_adcode_for(city_name: str, *, conn: sqlite3.Connection | None = None) -> str | None:
+    """城市名 → adcode。
+
+    引擎给的是**名字**（用户输入的目的地），库里存的是 adcode。两边写法常常
+    差一个字（引擎给「南京」，库里是「南京市」），所以双向前缀匹配。
+    匹配不上就返回 None——那不是错误，是「这座城市还没进过库」，
+    调用方据此走原路（纯高德搜索）。
+    """
+    text = (city_name or "").strip()
+    if not text:
+        return None
+    owned = conn is None
+    active = conn or connect()
+    try:
+        row = active.execute(
+            "SELECT adcode FROM city WHERE name = ? "
+            "   OR name LIKE ? || '%' OR ? LIKE name || '%' "
+            "ORDER BY LENGTH(name) LIMIT 1",
+            (text, text, text),
+        ).fetchone()
+    finally:
+        if owned:
+            active.close()
+    return row["adcode"] if row else None
+
+
+def _poi_entities(
+    poi_ids: list[str], *, conn: sqlite3.Connection
+) -> list[CandidatePoi]:
+    """按给到的顺序取回完整的 POI（含 `raw_json`）。
+
+    为什么不用 `_poi_rows`：那个只取界面要显示的那几列。这里要交给引擎，
+    它优先用原始响应转换（见 `engine/pool_search.to_spot`），所以得带上
+    `raw_json` 与类型列。
+    """
+    if not poi_ids:
+        return []
+    marks = ",".join("?" * len(poi_ids))
+    rows = conn.execute(
+        f"SELECT * FROM poi WHERE amap_poi_id IN ({marks})",  # noqa: S608 - 占位符按个数拼，值仍走参数
+        poi_ids,
+    ).fetchall()
+    by_id = {row["amap_poi_id"]: row for row in rows}
+
+    found: list[CandidatePoi] = []
+    for poi_id in poi_ids:
+        row = by_id.get(poi_id)
+        if row is None:
+            continue
+        found.append(
+            CandidatePoi(
+                poi_id=row["amap_poi_id"],
+                name=row["name"],
+                typecode=row["typecode"],
+                type_name=row["type"],
+                adcode=row["adcode"],
+                city_name=None,
+                address=row["address"],
+                lng_gcj02=row["lng_gcj02"],
+                lat_gcj02=row["lat_gcj02"],
+                tel=row["tel"],
+                photo_url=row["photo_url"],
+                rating=row["rating"],
+                open_time=row["open_time"],
+                parent_id=row["parent_poi_id"],
+                raw_json=row["raw_json"],
+            )
+        )
+    return found
+
+
+def pool_pois(
+    city_name: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+    limit: int = 60,
+    fetch=None,
+) -> list[CandidatePoi]:
+    """一座城市候选池里的地方，交给规划引擎用。
+
+    **判据与城市页同源**：先调 `city_candidates`（「有结论挂着才进池」那条
+    规则住在那里），再把结果换成引擎要的形状。两处各写一遍「什么算进池子」，
+    城市页与排程迟早会对同一个城市给出不同的池子——而那种不一致看起来
+    像是「规划不如页面懂我」。
+
+    引擎给的是城市名，所以先做一次名字 → adcode 的翻译；翻译不出来
+    （城市还没进过库）就返回空，调用方据此走纯高德搜索。
+
+    最后会**补一次缺失的评分**（见 `_fill_ratings`）：引擎的景点搜索之后有一道
+    「评分缺失视为不达标」的门禁，池子里没评分的地方会被它丢掉——夫子庙就是
+    这样一个。补的是高德自己的评分，不是我们编的数。
+    """
+    adcode = city_adcode_for(city_name, conn=conn)
+    if adcode is None:
+        return []
+
+    picked = city_candidates(adcode, conn=conn, limit=limit)
+    if not picked:
+        return []
+
+    owned = conn is None
+    active = conn or connect()
+    try:
+        pois = _poi_entities([item.poi_id for item in picked], conn=active)
+        return _fill_ratings(pois, conn=active, fetch=fetch)
+    finally:
+        if owned:
+            active.close()
+
+
+def _fill_ratings(
+    pois: list[CandidatePoi], *, conn: sqlite3.Connection, fetch=None
+) -> list[CandidatePoi]:
+    """给没有评分的地方补上高德的评分，并写回库里。
+
+    为什么这一步不能省：引擎的 `attraction_search_node` 拿到景点清单之后要过
+    一道 `filter_by_rating`，**评分缺失一律视为不达标**。池子里的地方是我们
+    已经认定「有人写过」的，却会因为高德没给评分被那道门禁丢掉——
+    夫子庙正是如此（本库里 11 个池子条目有 2 个没评分）。
+
+    补的是高德接口里那个评分，**不是编一个数**。查不到就保持原样：
+    缺评分是现状，不是错误，不该让一次规划因此挂掉。
+    """
+    missing = [poi for poi in pois if poi.rating is None]
+    if not missing:
+        return pois
+
+    if fetch is None:
+        from lushu.adapters.poi import fetch_poi
+
+        fetch = fetch_poi
+
+    found_ratings: dict[str, float] = {}
+    for poi in missing:
+        try:
+            found = fetch(poi.poi_id)
+        except Exception:  # noqa: BLE001 - 缺评分是现状，不该让规划挂掉
+            continue
+        if found is not None and found.rating is not None:
+            found_ratings[poi.poi_id] = found.rating
+
+    if not found_ratings:
+        return pois
+
+    for poi_id, rating in found_ratings.items():
+        conn.execute("UPDATE poi SET rating = ? WHERE amap_poi_id = ?", (rating, poi_id))
+    conn.commit()
+
+    return [replace(poi, rating=found_ratings.get(poi.poi_id, poi.rating)) for poi in pois]
 
 
 def fill_gaps(

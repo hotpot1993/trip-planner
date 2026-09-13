@@ -72,14 +72,23 @@ async def stream_plan(
     days: int | None = None,
     destination: str | None = None,
     max_review_rounds: int | None = None,
+    spot_source=None,
 ) -> AsyncIterator[PlanStage | PlanOutcome]:
     """运行规划流水线，逐个产出阶段事件，最后产出一个 PlanOutcome。
 
     结构化的出行条件会折进 query（见 `compose_query`），同时也作为初始状态传入；
     真正起作用的是前者。
+
+    `spot_source` 是候选池的提供者（`engine.pool_search.SpotProvider`）：
+    给了它，景点搜索就是「候选池优先、高德补全」；不给就是纯高德搜索。
     """
+    # 每次显式设定，不在两次规划之间残留状态
+    from lushu.engine import pool_search
+
     # 延迟导入：必须先加载 config，再触碰引擎
     from third_party.floattrip.planning.graph import run_stream
+
+    pool_search.install(spot_source)
 
     overrides: dict[str, Any] = {}
     if start_date is not None:

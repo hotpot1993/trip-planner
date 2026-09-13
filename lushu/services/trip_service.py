@@ -20,6 +20,7 @@ from datetime import date
 from lushu import config
 from lushu.domain.planned import PlannedDay, PlannedStay, PlannedTrip, StaySpec, lay_out
 from lushu.engine import PlanStage, resolve_city, run_plan
+from lushu.services import candidate_pool
 from lushu.services.plan_converter import plan_to_trip
 from lushu.services.trip_store import (
     CityRef,
@@ -311,6 +312,9 @@ async def plan_and_save(
         on_stage=on_stage,
         start_date=request.start_date,
         days=request.days,
+        # 候选池优先、高德补全（设计 5.1）。池子没覆盖的城市会返回空，
+        # 引擎于是走纯高德搜索——与从前完全一样。
+        spot_source=candidate_pool.pool_pois,
     )
     if not outcome.success or not outcome.plan:
         raise MissingInputError(outcome.missing_fields or ["出行需求"])
@@ -337,6 +341,8 @@ async def replan_trip(
         on_stage=on_stage,
         start_date=request.start_date,
         days=request.days,
+        # 候选池优先、高德补全（设计 5.1）
+        spot_source=candidate_pool.pool_pois,
     )
     if not outcome.success or not outcome.plan:
         raise MissingInputError(outcome.missing_fields or ["出行需求"])
