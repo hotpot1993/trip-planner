@@ -210,7 +210,8 @@ def _day(day: RoadbookDay) -> str:
         parts.append(_item(item))
         # 路段排在它所连接的两项之间——顺读下来就是「到这儿、然后怎么走、再到那儿」
         if index < len(day.legs):
-            parts.append(_leg(day.legs[index]))
+            nxt = day.items[index + 1] if index + 1 < len(day.items) else None
+            parts.append(_leg(day.legs[index], to_name=nxt.title if nxt else ""))
 
     parts.append("</section>")
     return "".join(parts)
@@ -242,11 +243,17 @@ def _item(item: RoadbookItem) -> str:
     )
 
 
-def _leg(leg: RoadbookLeg | None) -> str:
+def _leg(leg: RoadbookLeg | None, *, to_name: str = "") -> str:
     if leg is None:
         # 没有坐标就没有路段。**如实说**，不编一段看起来合理的文字——
         # 在陌生城市里按编出来的路线走，比知道「这段没算出来」糟得多。
-        return "<div class='leg'>这段路没有坐标，到当地问一下</div>"
+        #
+        # 但要把话说给读这一页的人听。原先写的是「这段路没有坐标，到当地问一下」：
+        # 那是**给作者看的**，而这一页是旅行途中在手机上翻的。实测一份路书里
+        # 这样的句子有 6 处，句子之间还长得一模一样，读的人既不知道说的是哪儿，
+        # 也不知道该干什么。现在点名目的地，并给出动作。
+        target = f"到「{escape(to_name)}」" if to_name else "这一段"
+        return f"<div class='leg'>{target}：没有坐标，按名字问路</div>"
 
     bits: list[str] = [MODE_LABEL.get(leg.mode, leg.mode)]
     if leg.distance_m is not None:

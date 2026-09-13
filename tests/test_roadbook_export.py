@@ -297,9 +297,23 @@ class TestRender:
         assert "只有午门能进" in html
 
     def test_missing_leg_says_so(self, db: Path) -> None:
-        """没有坐标的那段路如实说，不编一段看起来合理的文字。"""
+        """没有坐标的那段路如实说，不编一段看起来合理的文字。
+
+        但要**说给读这一页的人听**：旅行途中在手机上翻的人，既不知道说的是哪儿，
+        也不知道该干什么。所以句中要点名目的地。
+        """
         html = self._html(db)
-        assert "这段路没有坐标" in html
+
+        assert "没有坐标" in html
+        assert "按名字问路" in html
+        assert "这段路没有坐标，到当地问一下" not in html, "那句话是给作者看的，不该发到路上"
+
+    def test_missing_leg_names_its_destination(self, db: Path) -> None:
+        """一句「没有坐标」重复六遍等于没说——每条要说清是去哪儿。"""
+        html = self._html(db)
+        between = html.split("<div class='leg'>")
+
+        assert any(segment.startswith("到「") for segment in between[1:])
 
     def test_days_are_labelled(self, db: Path) -> None:
         html = self._html(db)

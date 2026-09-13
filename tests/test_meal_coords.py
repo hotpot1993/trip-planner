@@ -278,11 +278,14 @@ class TestResolution:
         assert "不像店名" in fix.reason
 
     def test_a_weak_name_match_is_refused(self, db: Path) -> None:
-        """差得太远的名字不硬套——那多半是另一家店，不是别名。"""
-        _trip_with_meals(db, ("许记糕点", None, None))
+        """差得太远的名字不硬套——那多半是另一家店，不是别名。
+
+        真实例子：「蒋有记锅贴」对高德上的「蒋有记(老门东店)」只有 0.3429。
+        """
+        _trip_with_meals(db, ("蒋有记锅贴", None, None))
         slot = mc.pending_meals(conn=connect(db))[0]
 
-        fix = mc.resolve_meal(slot, search=search_returning(_shop(name="许记(许家巷店)")))
+        fix = mc.resolve_meal(slot, search=search_returning(_shop(name="蒋有记(老门东店)")))
 
         assert fix.resolved is False
         assert "名字差得远" in fix.reason
