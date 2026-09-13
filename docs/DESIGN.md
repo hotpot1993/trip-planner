@@ -241,9 +241,13 @@ ls align run          实体对齐
 ls align audit        体检：有没有结论挂到了子点上（ADR-0009）
 ls eval gold          金标准标注
 ls eval run           跑评测，输出抽取精确率、召回率、对齐准确率
-ls verify scan        复验到期扫描
-ls booking seed       预约规则种子库
+ls booking list       预约规则库现状
+ls booking seed       把种子文件写进库（每条先在高德对齐实体）
 ls booking lint       预约规则体检
+ls booking review     复核规则，让它对用户可见
+ls booking ics        导出预约日历
+ls align merge-pois   同一处地方两个实体时的合并
+ls verify scan        复验到期扫描（M7）
 ls poi warm           按城市预热高德 POI
 ```
 

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import StrEnum
 
-from lushu.domain.lineage import CandidateSet
+from lushu.domain.lineage import MAX_ANCESTOR_HOPS, CandidateSet
 from lushu.domain.poi import NOT_A_DESTINATION_MARKS, CandidatePoi, PoiKind
 
 # 名称得分达到这个值才认为「就是它」。
@@ -559,6 +559,48 @@ def align(
     return _accept(mention, best, scored, roots, by_id)
 
 
+def _same_place_name(child: str, ancestor: str) -> bool:
+    """子点的名字里是不是带着祖先的名字。
+
+    `故宫博物院-午门` ⊃ `故宫博物院` → 那是同一处地方的长名字。
+    `湖北省博物馆` 与 `东湖生态旅游风景区` 互不包含 → 祖先是**容器**，
+    不是这处地方本身。
+    """
+    left, right = child.strip(), ancestor.strip()
+    if not left or not right:
+        return False
+    return right in left or left in right
+
+
+def _owner_through_same_place(poi: CandidatePoi, roots: CandidateSet) -> CandidatePoi:
+    """沿 `parent` 链往上走，但**只在名字上认得出是同一处地方时才继续走**。
+
+    ADR-0009 的原始证据是「午门」：它是故宫的一个门，行程里的一天项是
+    故宫博物院而不是午门，所以结论要挂到本体上。但那条规则被推广得太宽了。
+
+    实测：高德把「湖北省博物馆」的 parent 记成「东湖生态旅游风景区」——
+    博物馆确实坐落在东湖风景区内。无条件爬到根，就会把博物馆的预约规则
+    挂到整个东湖上，于是**任何一条路过东湖绿道的行程都会收到「去预约博物馆」
+    的提醒**。「上海博物馆(人民广场馆)」的 parent 是「上海人民广场」，同理。
+
+    所以爬链要加一道名称判据：子点的名字里带着祖先的名字，说明那是同一处
+    地方的长名字；两者互不包含，说明祖先只是个容器（风景区、广场），
+    该停在子点自己身上。
+    """
+    current = poi
+    for _ in range(MAX_ANCESTOR_HOPS):
+        parent_id = roots.lineage.get(current.poi_id)
+        if not parent_id:
+            break
+        parent = roots.get(parent_id)
+        if parent is None:
+            break  # 链条断在查不到的 id 上，停在断点，不猜
+        if not _same_place_name(current.name, parent.name):
+            break
+        current = parent
+    return current
+
+
 def _accept(
     mention: Mention,
     entity: _Entity,
@@ -572,9 +614,7 @@ def _accept(
     # 本体优先从谱系里取，而不是只看候选集。实测这一步很关键：
     # 搜「午门」时 `故宫博物院` 根本不在搜索结果里，
     # 只看候选集就只能停在子点「故宫博物院-午门」上。
-    resolved = roots.owner_of(entity.best.poi.poi_id)
-    if resolved is None:
-        resolved = by_id.get(entity.root_id) or entity.best.poi
+    resolved = _owner_through_same_place(entity.best.poi, roots)
 
     detail = f"名称得分 {entity.best.name_score:.2f}"
     if note:

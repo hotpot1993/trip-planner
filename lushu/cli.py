@@ -219,7 +219,12 @@ def _register_booking(sub) -> None:
     seed.set_defaults(_handler=_cmd_booking_seed)
 
     review = actions.add_parser("review", help="复核一条规则，让它对用户可见")
-    review.add_argument("poi_id")
+    review.add_argument("poi_id", nargs="?", help="要复核的那条规则")
+    review.add_argument(
+        "--all",
+        action="store_true",
+        help="把体检没有 error 的草案全部复核掉。批量签字，先跑 ls booking lint 看清楚",
+    )
     review.add_argument("--evidence", help="来源链接，不给就用种子里的")
     review.add_argument("--note", help="复核备注")
     review.set_defaults(_handler=_cmd_booking_review)
@@ -448,6 +453,13 @@ def _cmd_booking_review(args: argparse.Namespace) -> int:
     from lushu.services import booking_store as bs
     from lushu.store import transaction
 
+    if args.all:
+        return _review_all(args)
+
+    if not args.poi_id:
+        print("要复核哪一条？给出 poi_id，或用 --all 批量")
+        return 2
+
     rule = bs.get_rule(args.poi_id)
     if rule is None:
         print(f"没有这条规则：{args.poi_id}")
@@ -509,6 +521,52 @@ def _cmd_booking_ics(args: argparse.Namespace) -> int:
     else:
         print(f"《{name}》的预约提醒都在里面了。导入手机日历即可。", file=sys.stderr)
     return 0
+
+
+def _review_all(args: argparse.Namespace) -> int:
+    """把体检没有 error 的草案全部复核掉。
+
+    这是**批量签字**，所以先把体检结果摆出来再说签了几条：复核意味着
+    「这些规则现在可以对用户可见了」，一旦放出去，错的字段就会让人白跑。
+    有 error 的一律跳过——门禁的意义就在这里。
+    """
+    from datetime import date
+
+    from lushu.domain.booking import RuleStatus, Severity, lint_rule
+    from lushu.services import booking_store as bs
+    from lushu.store import transaction
+
+    rules = [item for item in bs.all_rules() if item.status is RuleStatus.DRAFT]
+    if not rules:
+        print("没有待复核的草案")
+        return 0
+
+    today = date.today()
+    names = bs.poi_names()
+    skipped: list[tuple[str, list[str]]] = []
+    approved: list[str] = []
+    for rule in rules:
+        problems = [
+            item
+            for item in lint_rule(rule, today=today)
+            if item.severity is Severity.ERROR
+        ]
+        if problems:
+            skipped.append((names.get(rule.poi_id, rule.poi_id), [p.message for p in problems]))
+        else:
+            approved.append(rule.poi_id)
+
+    with transaction() as conn:
+        done = [poi for poi in approved if bs.review_rule(conn=conn, poi_id=poi, reviewed_at=today)]
+
+    print(f"复核 {len(done)} 条，跳过 {len(skipped)} 条")
+    for name, reasons in skipped:
+        print(f"  跳过 {name}：{'；'.join(reasons)}")
+    if done:
+        print()
+        print("已对用户可见。每条 90 天后到期复验——预约规则会变，")
+        print("湖南博物院 2026-07 刚从「提前 7 天」改成「提前 5 天」就是一个例子。")
+    return 0 if not skipped else 1
 
 
 def _usage(parser: argparse.ArgumentParser) -> int:

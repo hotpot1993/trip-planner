@@ -124,19 +124,71 @@ class TestAlign:
         assert result.matched.poi_id == "B000A84GDN"
         assert result.collapsed_from_sub
 
-    def test_collapse_walks_multiple_hops(self) -> None:
-        """实测的链是三跳，只有最后一跳的 parent 是空的。
+    def test_collapse_stops_when_the_ancestor_is_a_container(self) -> None:
+        """祖先只是个**容器**时不该往上爬。
 
-        `秦始皇兵马俑博物馆第1停车场`（B001D0095C）→ `秦始皇兵马俑博物馆`
-        （B0FFGXMLTU）→ `秦始皇帝陵博物院`（B001D09OYW）。
-        走一步不算归并——只走一步会把本体认成「秦始皇兵马俑博物馆」。
+        实测：高德把「湖北省博物馆」的 parent 记成「东湖生态旅游风景区」——
+        博物馆确实坐落在东湖风景区内。无条件爬到根，博物馆的预约规则就会挂到
+        整个东湖上，于是任何一条路过东湖绿道的行程都会收到「去预约博物馆」的提醒。
+        「上海博物馆(人民广场馆)」的 parent 是「上海人民广场」，同理。
+
+        判据是名称包含：子点的名字里带着祖先的名字，那是同一处地方的长名字；
+        两者互不包含，说明祖先是个风景区、广场这类容器，该停在子点自己身上。
+        """
+        candidates = [
+            poi("B001B0A0CK", "东湖生态旅游风景区", typecode="110202", adcode="420106"),
+            poi("B0IGSZ3SDI", "湖北省博物馆停车场", typecode="150904",
+                parent_id="B001B0JYXS", adcode="420106"),
+            poi("B001B0JYXS", "湖北省博物馆", typecode="140100", parent_id="B001B0A0CK",
+                adcode="420106"),
+        ]
+        result = align(
+            Mention(name="湖北省博物馆", city_name="武汉", city_adcode="420100"), candidates
+        )
+
+        assert result.outcome is AlignOutcome.ALIGNED
+        assert result.resolved is not None
+        assert result.resolved.poi_id == "B001B0JYXS"
+        assert not result.collapsed_from_sub
+
+    def test_nested_names_still_land_on_the_root(self) -> None:
+        """名字层层嵌套的一串候选，最终落在根上。
+
+        这是 ADR-0009 原本要覆盖的那一类：子点的名字是「本体 + 后缀」。
+        至于归并发生在哪一步（合并同本体候选时，还是认定实体后爬链时）
+        不重要——**重要的是结果落在根上**，测试不该把实现细节钉死。
+        """
+        candidates = [
+            poi("B_ROOT", "云台山风景区", typecode="110202", adcode="410811"),
+            poi("B_GATE", "云台山风景区-红石峡", typecode="110200",
+                parent_id="B_ROOT", adcode="410811"),
+            poi("B_PARK", "云台山风景区-红石峡停车场", typecode="150904",
+                parent_id="B_GATE", adcode="410811"),
+        ]
+        result = align(
+            Mention(
+                name="云台山风景区-红石峡停车场",
+                city_name="焦作",
+                city_adcode="410800",
+            ),
+            candidates,
+        )
+
+        assert result.outcome is AlignOutcome.ALIGNED
+        assert result.resolved is not None
+        assert result.resolved.poi_id == "B_ROOT"
+
+    def test_a_mention_matching_an_entity_exactly_is_not_climbed(self) -> None:
+        """提及与某条候选**名字完全一样**时，不再往上爬。
+
+        「秦始皇兵马俑博物馆」自己就是一个能排进行程的地方，而它的
+        parent「秦始皇帝陵博物院」是更大的机构，两者名字互不包含。
+        把前者归并到后者，等于替用户改了他要去的地方。
         """
         candidates = [
             poi("B001D09OYW", "秦始皇帝陵博物院", typecode="110202", adcode="610115"),
-            poi("B0FFGXMLTU", "秦始皇兵马俑博物馆", typecode="140100", parent_id="B001D09OYW",
-                adcode="610115"),
-            poi("B001D0095C", "秦始皇兵马俑博物馆第1停车场", typecode="150904",
-                parent_id="B0FFGXMLTU", adcode="610115"),
+            poi("B0FFGXMLTU", "秦始皇兵马俑博物馆", typecode="140100",
+                parent_id="B001D09OYW", adcode="610115"),
         ]
         result = align(
             Mention(name="秦始皇兵马俑博物馆", city_name="西安", city_adcode="610100"),
@@ -144,7 +196,8 @@ class TestAlign:
         )
 
         assert result.resolved is not None
-        assert result.resolved.poi_id == "B001D09OYW"
+        assert result.resolved.poi_id == "B0FFGXMLTU"
+        assert not result.collapsed_from_sub
 
     def test_missing_parent_is_not_collapsed_silently(self) -> None:
         """父节点不在候选里时只能留在子点上，但必须让调用方看出来。"""
