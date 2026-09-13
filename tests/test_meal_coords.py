@@ -478,6 +478,225 @@ class TestNearbyStage:
             mc.resolve_meal(slot, search=wrong_signature)
 
 
+class TestMealCandidates:
+    """自动判据定不下来时，把候选摊给人看。
+
+    排序键是**名字分主序、距离次序**：同分时距离说话（「绿柳居」的 24 家
+    一样像，人认出是哪一家靠的是「就在老门东里面」），但距离不能当主序——
+    高德的周边搜索会带回附近别的饭馆，它们离得更近。
+    """
+
+    def _slot(self, db: Path, title: str, *anchors: mc.Anchor) -> mc.MealSlot:
+        _trip_with_meals(db, (title, None, None))
+        return replace(mc.pending_meals(conn=connect(db))[0], anchors=anchors)
+
+    def test_ranks_by_distance_within_the_same_name_score(self, db: Path) -> None:
+        slot = self._slot(db, "绿柳居", mc.Anchor("a1", "夫子庙", 32.0209, 118.7886))
+        near = _shop("B_1", "绿柳居(夫子庙店)", lat=32.0215, lng=118.7890)
+        far = _shop("B_2", "绿柳居(龙江阳光广场店)", lat=32.0600, lng=118.7300)
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(far, near), around=_around_returning(far, near)
+        )
+
+        assert [item.name for item in result.candidates] == ["绿柳居(夫子庙店)", "绿柳居(龙江阳光广场店)"]
+        assert result.candidates[0].distance_m is not None
+        assert result.candidates[0].distance_m < 200
+        assert result.candidates[0].nearest_anchor == "夫子庙"
+
+    def test_a_nearer_but_unrelated_shop_does_not_win(self, db: Path) -> None:
+        """**距离不能当主序。**
+
+        高德的周边搜索会带回附近别的饭馆。搜「南京大牌档（中山陵店）」时，
+        紫金坊边上那些火烧店离得更近——先按距离排的话，人打开看到的是一串
+        不相干的店，真正像的那几家被挤到后面。这条是被真实截图逼出来的。
+        """
+        slot = self._slot(
+            db, "南京大牌档（中山陵店）", mc.Anchor("a1", "中山陵", 32.0600, 118.8500)
+        )
+        unrelated = _shop("B_1", "野蘑菇火烧(紫金坊店)", lat=32.0601, lng=118.8501)
+        branch = _shop("B_2", "南京大牌档(中山陵紫金坊店)", lat=32.0620, lng=118.8530)
+
+        result = mc.meal_candidates(
+            slot,
+            search=search_returning(unrelated, branch),
+            around=_around_returning(unrelated, branch),
+        )
+
+        assert [item.name for item in result.candidates] == [
+            "南京大牌档(中山陵紫金坊店)",
+            "野蘑菇火烧(紫金坊店)",
+        ]
+        # 不相关的那个确实更近，但排在后面
+        assert result.candidates[0].distance_m is not None
+        assert result.candidates[1].distance_m is not None
+        assert result.candidates[1].distance_m < result.candidates[0].distance_m
+
+    def test_keeps_a_weak_name_match(self, db: Path) -> None:
+        """**不按名字分筛候选。**
+
+        自动判据嫌「蒋有记(老门东店)」只有 0.34，可人在屏幕上一眼就知道是它。
+        筛掉它等于把答案藏起来。
+        """
+        slot = self._slot(db, "蒋有记锅贴", mc.Anchor("a1", "老门东", 32.0116, 118.7876))
+        weak = _shop("B_1", "蒋有记(老门东店)", lat=32.0120, lng=118.7880)
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(weak), around=_around_returning(weak)
+        )
+
+        assert [item.name for item in result.candidates] == ["蒋有记(老门东店)"]
+        assert result.candidates[0].name_score < 0.5
+
+    def test_distance_is_to_the_nearest_anchor_not_the_searching_one(self, db: Path) -> None:
+        """同一家店可能同时出现在城市搜索与几处锚点的周边搜索里。
+
+        距离要**算**到最近的那处，而不是记「是哪次搜索带回来的」——
+        否则同一家店会因为来源不同而显示成两个不同的距离。
+        """
+        slot = self._slot(
+            db,
+            "绿柳居",
+            mc.Anchor("a1", "夫子庙", 32.0209, 118.7886),
+            mc.Anchor("a2", "中山陵", 32.0600, 118.8500),
+        )
+        shop = _shop("B_1", "绿柳居(夫子庙店)", lat=32.0215, lng=118.7890)
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(shop), around=_around_returning(shop)
+        )
+
+        assert len(result.candidates) == 1
+        assert result.candidates[0].nearest_anchor == "夫子庙"
+        assert result.candidates[0].distance_m is not None
+        assert result.candidates[0].distance_m < 200
+
+    def test_a_city_only_candidate_still_gets_a_distance(self, db: Path) -> None:
+        """城市搜索来的候选也要有距离。
+
+        第一版把距离绑在「哪处锚点的周边搜索带回来的」，于是城市搜索来的
+        候选全显示「距离算不出」——而我们手里明明有它的坐标。
+        """
+        slot = self._slot(db, "绿柳居", mc.Anchor("a1", "夫子庙", 32.0209, 118.7886))
+        only_from_city = _shop("B_1", "绿柳居(龙江阳光广场店)", lat=32.0600, lng=118.7300)
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(only_from_city), around=_around_returning()
+        )
+
+        assert result.candidates[0].distance_m is not None
+        assert result.candidates[0].distance_m > 5000
+        assert result.candidates[0].nearest_anchor == "夫子庙"
+
+    def test_drops_what_is_not_a_restaurant(self, db: Path) -> None:
+        """结构性判据照旧：同城、是吃饭的地方。那不是判断，是分类。"""
+        slot = self._slot(db, "绿柳居", mc.Anchor("a1", "夫子庙", 32.02, 118.79))
+        station = CandidatePoi(
+            poi_id="B_9",
+            name="绿柳居",
+            typecode="150200",
+            type_name="交通设施服务;公交车站",
+            adcode="320102",
+            city_name="南京市",
+            lng_gcj02=118.79,
+            lat_gcj02=32.02,
+        )
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(station), around=_around_returning(station)
+        )
+
+        assert result.candidates == []
+
+    def test_limits_what_is_shown_but_reports_the_total(self, db: Path) -> None:
+        """全城 24 家一次铺完没人看得下去，但「一共多少个」要如实说。"""
+        slot = self._slot(db, "绿柳居", mc.Anchor("a1", "夫子庙", 32.02, 118.79))
+        shops = [_shop(f"B_{i}", f"绿柳居({i}店)", lat=32.02 + i / 100, lng=118.79) for i in range(12)]
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(*shops), around=_around_returning(*shops), limit=5
+        )
+
+        assert len(result.candidates) == 5
+        assert result.total == 12
+
+    def test_a_search_failure_is_carried_in_the_note(self, db: Path) -> None:
+        """某一处锚点搜挂了不该让整页空掉——别的候选照常给出来。"""
+        slot = self._slot(db, "绿柳居", mc.Anchor("a1", "夫子庙", 32.02, 118.79))
+        good = _around_returning(_shop("B_1", "绿柳居(夫子庙店)"))
+
+        def half_broken(keywords: str, city: str):
+            raise PoiSearchError("CUQPS_HAS_EXCEEDED_THE_LIMIT")
+
+        result = mc.meal_candidates(slot, search=half_broken, around=good)
+
+        assert [item.name for item in result.candidates] == ["绿柳居(夫子庙店)"]
+        assert "城市搜索失败" in result.note
+
+    def test_without_anchors_the_distance_is_unknown_not_zero(self, db: Path) -> None:
+        """没有锚点就没有距离。**「算不出」不能写成 0**——0 米看起来像就在旁边。"""
+        slot = self._slot(db, "绿柳居")
+
+        result = mc.meal_candidates(
+            slot, search=search_returning(_shop("B_1", "绿柳居(夫子庙店)")), around=_around_returning()
+        )
+
+        assert result.candidates[0].distance_m is None
+        assert result.candidates[0].nearest_anchor is None
+
+
+class TestPinMeal:
+    def test_writes_the_coordinates(self, db: Path) -> None:
+        _trip_with_meals(db, ("绿柳居", None, None))
+        item_id = mc.pending_meals(conn=connect(db))[0].item_id
+
+        assert mc.pin_meal(
+            item_id, lat_gcj02=32.0215, lng_gcj02=118.7890, address="夫子庙店", conn=connect(db)
+        )
+
+        row = connect(db).execute(
+            "SELECT lat_gcj02, lng_gcj02, address, poi_id FROM day_item WHERE id = ?", (item_id,)
+        ).fetchone()
+        assert (row["lat_gcj02"], row["lng_gcj02"]) == (32.0215, 118.7890)
+        assert row["address"] == "夫子庙店"
+        assert row["poi_id"] is None
+
+    def test_does_not_overwrite_an_existing_pin(self, db: Path) -> None:
+        """已经定下来的不该被再点一次冲掉——人核对过的东西比一次点击值钱。"""
+        _trip_with_meals(db, ("绿柳居", 32.0, 118.0))
+        item_id = "di_0"
+
+        assert mc.pin_meal(item_id, lat_gcj02=1.0, lng_gcj02=2.0, conn=connect(db)) is False
+        row = connect(db).execute("SELECT lat_gcj02 FROM day_item WHERE id = ?", (item_id,)).fetchone()
+        assert row["lat_gcj02"] == 32.0
+
+    def test_only_touches_meals(self, db: Path) -> None:
+        """景点项走 `poi` 表（ADR-0001），这里只补餐饮，别把别的行改了。"""
+        _trip_with_meals(db, ("绿柳居", None, None))
+        with transaction(db) as conn:
+            conn.execute(
+                "INSERT INTO day_item (id, day_id, seq, kind, title, origin) "
+                "VALUES ('di_poi', 'day_1', -1, 'poi', '夫子庙', 'ai')"
+            )
+
+        assert mc.pin_meal("di_poi", lat_gcj02=1.0, lng_gcj02=2.0, conn=connect(db)) is False
+
+    def test_the_pinned_meal_leaves_the_pending_list(self, db: Path) -> None:
+        """指定之后就不该再出现在待办里——这条路书的路段说明能补上了。"""
+        _trip_with_meals(db, ("绿柳居", None, None))
+        item_id = mc.pending_meals(conn=connect(db))[0].item_id
+
+        mc.pin_meal(item_id, lat_gcj02=32.02, lng_gcj02=118.79, conn=connect(db))
+
+        assert mc.pending_meals(conn=connect(db)) == []
+
+    def test_pending_by_trip_scopes_to_one_trip(self, db: Path) -> None:
+        _trip_with_meals(db, ("绿柳居", None, None))
+
+        assert len(mc.pending_by_trip("trip_1", conn=connect(db))) == 1
+        assert mc.pending_by_trip("trip_other", conn=connect(db)) == []
+
+
 class TestPlanFill:
     def test_does_not_sleep_before_the_first_search(self, db: Path) -> None:
         _trip_with_meals(db, ("南京大牌档", None, None), ("绿柳居", None, None))

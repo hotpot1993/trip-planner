@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { BudgetPanel } from '@/components/BudgetPanel'
 import { BookingPanel } from '@/components/BookingPanel'
+import { MealCoordsPanel } from '@/components/MealCoordsPanel'
 import { RouteRail } from '@/components/RouteRail'
 import { WeatherPanel } from '@/components/WeatherPanel'
 import {
   ApiError,
   confirmTrip,
   deleteTrip,
+  fetchPendingMeals,
   fetchTripBooking,
   fetchTripCoverage,
   fetchTripInsights,
@@ -16,6 +18,7 @@ import {
   refreshTransfers,
   roadbookUrl,
   updateStays,
+  type PendingMealsOut,
   type TripBookingOut,
   type TripCoverageOut,
   type TripDetailOut,
@@ -37,6 +40,8 @@ export function TripDetail({ tripId }: { tripId: string }) {
   const [coverage, setCoverage] = useState<TripCoverageOut | null>(null)
   const [booking, setBooking] = useState<TripBookingOut | null>(null)
   const [bookingError, setBookingError] = useState<string | null>(null)
+  const [pendingMeals, setPendingMeals] = useState<PendingMealsOut | null>(null)
+  const [pendingMealsError, setPendingMealsError] = useState<string | null>(null)
 
   const reload = useCallback(() => {
     setError(null)
@@ -64,6 +69,16 @@ export function TripDetail({ tripId }: { tripId: string }) {
       .catch((cause: unknown) => {
         setBooking(null)
         setBookingError(cause instanceof Error ? cause.message : String(cause))
+      })
+    // 待补坐标的餐饮项。只查库，不联网——候选要打高德，等用户点开某一项再取。
+    fetchPendingMeals(tripId)
+      .then((payload) => {
+        setPendingMeals(payload)
+        setPendingMealsError(null)
+      })
+      .catch((cause: unknown) => {
+        setPendingMeals(null)
+        setPendingMealsError(cause instanceof Error ? cause.message : String(cause))
       })
   }, [tripId])
 
@@ -103,6 +118,19 @@ export function TripDetail({ tripId }: { tripId: string }) {
       {/* 预约排在行程前面：时点比行程本身更紧急。
           用户打开这份行程时真正可能已经晚了的事，是某个景点的票几天前放过了。 */}
       <BookingPanel data={booking} error={bookingError} tripId={trip.id} />
+
+      {/* 待补坐标的餐饮项排在行程前面：它们直接决定路书里那几段路说明有没有。
+          没有坐标的地方，路书只能写「按名字问路」。 */}
+      <MealCoordsPanel
+        data={pendingMeals}
+        error={pendingMealsError}
+        tripId={trip.id}
+        onPinned={(fresh) => {
+          setPendingMeals(fresh)
+          // 坐标写进了天项，行程本身也变了（路书的段路说明由它算出来）
+          reload()
+        }}
+      />
 
       <section>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">

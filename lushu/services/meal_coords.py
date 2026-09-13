@@ -44,7 +44,8 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from lushu.adapters.poi import PoiSearchError
+from lushu.adapters.poi import MAX_LIMIT, PoiSearchError
+from lushu.domain.geo import distance_m
 from lushu.store.connection import connect
 
 # 高德 QPS 限制实测会撞（`CUQPS_HAS_EXCEEDED_THE_LIMIT`），
@@ -354,8 +355,209 @@ def _looks_like_a_shop(name: str) -> bool:
     return not any(mark in name for mark in _NOT_A_SHOP_MARKS)
 
 
-def plan_fill(
-    slots: Sequence[MealSlot],
+@dataclass(frozen=True)
+class MealCandidate:
+    """一个可以指定的候选店。
+
+    `distance_m` 是离**当天最近那处景点**的距离，`nearest_anchor` 是那处的名字。
+    人是靠「就在老门东里面」这句话认出来的，而不是靠名字分。
+    """
+
+    poi_id: str
+    name: str
+    address: str | None
+    lat_gcj02: float
+    lng_gcj02: float
+    distance_m: int | None = None
+    nearest_anchor: str | None = None
+    name_score: float = 0.0
+
+
+@dataclass
+class CandidateList:
+    """一个待指定餐饮项的候选，以及一共筛出多少个。"""
+
+    slot: MealSlot
+    candidates: list[MealCandidate] = field(default_factory=list)
+    total: int = 0
+    note: str = ""
+
+
+# 指定时最多列几个候选。全城搜「绿柳居」有 24 家，一次铺完没人看得下去；
+# 按离当天景点的距离排好之后，该看的那几家一定在最前面。
+CANDIDATE_LIMIT = 8
+
+
+def meal_candidates(
+    slot: MealSlot,
+    *,
+    search=None,
+    around=None,
+    limit: int = CANDIDATE_LIMIT,
+    pause: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> CandidateList:
+    """把一个待指定餐饮项的候选摊出来，**先按名字像不像、再按离当天景点多远**排。
+
+    自动判据定不下来的时候（同名分店太多、行程里写的是菜名），只有人知道
+    说的是哪一家。人靠什么认？对「绿柳居」这种，不是名字分——24 家全都一样像，
+    而是「就在老门东里面」。所以同分时距离说话。
+
+    但距离不能当主序：高德的周边搜索会带回附近**别的**饭馆，它们离得更近，
+    会把真正像的那几家挤下去。详见下面排序键处的注释。
+
+    这里**不按名字分筛掉候选**：自动判据嫌「蒋有记(老门东店)」只有 0.34，
+    可人在屏幕上一眼就知道是它。筛掉它等于把答案藏起来。
+    结构性判据照旧（同城、是吃饭的地方）——那是「是不是同一类东西」，不是判断。
+    """
+    from lushu.domain.align import name_score
+
+    if search is None or around is None:
+        from lushu.adapters.poi import search_around_pois, search_pois
+
+        search = search or (lambda keywords, city: search_pois(keywords, city=city, limit=MAX_LIMIT))
+        around = around or (
+            lambda keywords, lat_gcj02, lng_gcj02: search_around_pois(
+                keywords, lat_gcj02=lat_gcj02, lng_gcj02=lng_gcj02, limit=MAX_LIMIT
+            )
+        )
+
+    found: dict[str, MealCandidate] = {}
+    notes: list[str] = []
+
+    def take(result) -> None:
+        for poi in result.candidates:
+            if not poi.in_city(slot.city_adcode) or not _is_food(poi):
+                continue
+            if poi.lat_gcj02 is None or poi.lng_gcj02 is None:
+                continue
+            # 距离是**算出来的**，与「哪一次搜索找到它」无关：城市搜索也会
+            # 返回店，那些同样要显示「离当天景点多远」。第一版把距离绑在
+            # 「是哪处锚点的周边搜索带回来的」，于是城市搜索来的候选全显示
+            # 「距离算不出」——而我们手里明明有坐标。
+            distance, anchor_title = _nearest_anchor(poi, slot.anchors)
+            found[poi.poi_id] = MealCandidate(
+                poi_id=poi.poi_id,
+                name=poi.name,
+                address=poi.address,
+                lat_gcj02=poi.lat_gcj02,
+                lng_gcj02=poi.lng_gcj02,
+                distance_m=distance,
+                nearest_anchor=anchor_title,
+                name_score=name_score(slot.title, poi.name),
+            )
+
+    try:
+        take(search(slot.title, slot.city_name))
+    except PoiSearchError as exc:
+        notes.append(f"城市搜索失败：{exc}")
+
+    for anchor in slot.anchors:
+        if pause:
+            sleep(pause)
+        try:
+            # 与 `resolve_meal` 里的调法**必须一致**：同一个注入的搜索函数，
+            # 一处按关键字传、一处按位置传，测试用假函数时会当场炸，
+            # 用真函数时则可能悄悄传反（高德的 location 是「经度,纬度」）。
+            take(around(slot.title, lat_gcj02=anchor.lat_gcj02, lng_gcj02=anchor.lng_gcj02))
+        except PoiSearchError as exc:
+            notes.append(f"绕着{anchor.title}搜索失败：{exc}")
+
+    ordered = sorted(
+        found.values(),
+        # **名字分是主序，距离是次序。**
+        #
+        # 一开始只按距离排，实测不行：高德的周边搜索会带回附近**别的**饭馆
+        # （搜「南京大牌档（中山陵店）」，紫金坊边上那些火烧店、面馆全进来了），
+        # 它们离得最近，于是把真正像的那几家挤到后面去——人打开看到的是
+        # 一串不相干的店。
+        #
+        # 反过来先按名字分排，正好落在两种真实情形上：
+        # - 品牌名不带分店（「绿柳居」的 24 家全是 0.9）：同分，距离接着说话，
+        #   于是夫子庙边上那几家排在最前——这正是人认出答案的方式；
+        # - 高德的名字与行程里写的不一样（「蒋有记锅贴」对「蒋有记(老门东店)」
+        #   只有 0.34）：分都低，距离仍然说话。
+        #
+        # 距离算不出的排在同分的最后，而不是当成 0——0 米看起来像就在旁边。
+        key=lambda item: (
+            -item.name_score,
+            item.distance_m is None,
+            item.distance_m if item.distance_m is not None else 0,
+            item.name,
+        ),
+    )
+    return CandidateList(
+        slot=slot,
+        candidates=ordered[:limit],
+        total=len(ordered),
+        note="；".join(notes),
+    )
+
+
+def _nearest_anchor(poi, anchors: tuple[Anchor, ...]) -> tuple[int | None, str | None]:
+    """这一处候选离当天最近的那处景点多远。
+
+    没有锚点就算不出——返回 `None` 而**不是 0**：0 米看起来像就在旁边。
+    """
+    if not anchors or poi.lat_gcj02 is None or poi.lng_gcj02 is None:
+        return None, None
+    best = min(
+        anchors,
+        key=lambda a: distance_m(poi.lat_gcj02, poi.lng_gcj02, a.lat_gcj02, a.lng_gcj02),
+    )
+    return round(distance_m(poi.lat_gcj02, poi.lng_gcj02, best.lat_gcj02, best.lng_gcj02)), best.title
+
+
+def pending_by_trip(trip_id: str, *, conn: sqlite3.Connection | None = None) -> list[MealSlot]:
+    """某份行程里待指定的餐饮项。界面用它，与命令行同一处来源。"""
+    return pending_meals(conn=conn, trip_id=trip_id)
+
+
+def pending_item(
+    trip_id: str, item_id: str, *, conn: sqlite3.Connection | None = None
+) -> MealSlot | None:
+    """待指定列表里的某一项；不是待指定项就返回 None。
+
+    界面与命令行都要先问这一句：**不是待办的东西不该被写**。
+    它同时也回答了「这一项属不属于这份行程」。
+    """
+    for slot in pending_meals(conn=conn, trip_id=trip_id):
+        if slot.item_id == item_id:
+            return slot
+    return None
+
+
+def pin_meal(
+    item_id: str,
+    *,
+    lat_gcj02: float,
+    lng_gcj02: float,
+    address: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """人工指定一处餐饮的坐标。返回是否真的写了。
+
+    **只写空着的那些**（`lat_gcj02 IS NULL`）。这不是保守，是因为这一列一旦
+    有值就有人核对过——重跑一次自动补齐或再点一次「就这个」，都不该把它冲掉。
+
+    仍然不写 `poi_id`：给餐厅编一个实体 id 会污染实体表（ADR-0002 说的是景点）。
+    """
+    owned = conn is None
+    active = conn or connect()
+    try:
+        cursor = active.execute(
+            "UPDATE day_item SET lat_gcj02 = ?, lng_gcj02 = ?, address = COALESCE(address, ?) "
+            "WHERE id = ? AND kind = 'meal' AND lat_gcj02 IS NULL",
+            (lat_gcj02, lng_gcj02, address, item_id),
+        )
+        active.commit()
+        return bool(cursor.rowcount)
+    finally:
+        if owned:
+            active.close()
+
+
+def plan_fill(    slots: Sequence[MealSlot],
     *,
     search,
     around=None,

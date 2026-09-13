@@ -822,3 +822,174 @@ def resolve_cities(
         )
         for m in lookup_city(name)
     ]
+
+
+# ─── 待补坐标的餐饮项 ───────────────────────────────────────────
+#
+# 自动判据（`services/meal_coords`）只写分得清的那些。分不清的怎么办？
+# **让人来认**——机器分不清「绿柳居」的 24 家分店，人一眼就知道是夫子庙那家。
+# 这一组接口是那个人工入口：列出待办、摊开候选、按人选定的写进去。
+
+
+class MealCandidateOut(BaseModel):
+    """一个可以指定的候选店。"""
+
+    poi_id: str
+    name: str
+    address: str | None
+    lat_gcj02: float
+    lng_gcj02: float
+    # 离**当天最近那处景点**的距离。算不出就是 None——
+    # 「算不出」不能写成 0，0 米看起来像就在旁边。
+    distance_m: int | None
+    nearest_anchor: str | None
+    name_score: float
+
+
+class PendingMealOut(BaseModel):
+    """一处没有坐标的餐饮项。"""
+
+    item_id: str
+    day_date: str
+    title: str
+    city_name: str
+    anchors: list[str]
+
+
+class PendingMealsOut(BaseModel):
+    trip_id: str
+    items: list[PendingMealOut]
+
+
+class MealCandidatesOut(BaseModel):
+    item_id: str
+    title: str
+    city_name: str
+    anchors: list[str]
+    candidates: list[MealCandidateOut]
+    # 筛出多少个（可能多于列出来的）。「还有更远的没显示」要说得出口。
+    total: int
+    note: str
+
+
+class PinMealIn(BaseModel):
+    """人选定的那一家的坐标。
+
+    传坐标而不是传 `poi_id`：候选来自高德搜索，不一定在我们的 `poi` 表里，
+    为它写一行实体是错的（餐厅不该进实体表，ADR-0002 说的是景点）。
+    """
+
+    lat_gcj02: float
+    lng_gcj02: float
+    address: str | None = None
+
+
+def _pending_out(trip_id: str) -> PendingMealsOut:
+    from lushu.services import meal_coords
+
+    return PendingMealsOut(
+        trip_id=trip_id,
+        items=[
+            PendingMealOut(
+                item_id=slot.item_id,
+                day_date=slot.day_date,
+                title=slot.title,
+                city_name=slot.city_name,
+                anchors=[anchor.title for anchor in slot.anchors],
+            )
+            for slot in meal_coords.pending_by_trip(trip_id)
+        ],
+    )
+
+
+def _require_trip(trip_id: str) -> None:
+    if trip_service.get_trip(trip_id) is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+
+@router.get(
+    "/trips/{trip_id}/pending-meals",
+    response_model=PendingMealsOut,
+    summary="没有坐标的餐饮项",
+)
+def trip_pending_meals(trip_id: str) -> PendingMealsOut:
+    """列出待补坐标的餐饮项。
+
+    **只查库，不联网。** 候选要打高德（每项一处锚点一次请求），放在这里会让
+    每次打开行程页都慢十几秒、还把接口额度烧在一眼不看的东西上。所以要单独
+    一个接口、点开某一项时才取。
+    """
+    _require_trip(trip_id)
+    return _pending_out(trip_id)
+
+
+@router.get(
+    "/trips/{trip_id}/pending-meals/{item_id}/candidates",
+    response_model=MealCandidatesOut,
+    summary="这一项在高德上有哪些可能",
+)
+def trip_meal_candidates(trip_id: str, item_id: str) -> MealCandidatesOut:
+    """把候选摊开来给人认，**按离当天景点的距离排**。
+
+    排序键是距离不是名字分：「绿柳居」的 24 家全都一样像，人能认出是哪一家
+    靠的是「就在老门东里面」。
+    """
+    from lushu.services import meal_coords
+
+    _require_trip(trip_id)
+    slot = meal_coords.pending_item(trip_id, item_id)
+    if slot is None:
+        raise HTTPException(status_code=404, detail="这一项不是这份行程里待补坐标的餐饮项")
+
+    listed = meal_coords.meal_candidates(slot)
+    return MealCandidatesOut(
+        item_id=slot.item_id,
+        title=slot.title,
+        city_name=slot.city_name,
+        anchors=[anchor.title for anchor in slot.anchors],
+        candidates=[
+            MealCandidateOut(
+                poi_id=item.poi_id,
+                name=item.name,
+                address=item.address,
+                lat_gcj02=item.lat_gcj02,
+                lng_gcj02=item.lng_gcj02,
+                distance_m=item.distance_m,
+                nearest_anchor=item.nearest_anchor,
+                name_score=item.name_score,
+            )
+            for item in listed.candidates
+        ],
+        total=listed.total,
+        note=listed.note,
+    )
+
+
+@router.post(
+    "/trips/{trip_id}/pending-meals/{item_id}",
+    response_model=PendingMealsOut,
+    summary="指定一处餐饮的位置",
+)
+def pin_meal_coords(trip_id: str, item_id: str, payload: PinMealIn) -> PendingMealsOut:
+    """把人选定的坐标写进天项，返回**刷新后的待办**。
+
+    返回整份待办而不是 204：界面上少一次往返，也不会出现「写进去了但清单
+    还显示着它」的半截状态。
+    """
+    from lushu.services import meal_coords
+
+    _require_trip(trip_id)
+    if meal_coords.pending_item(trip_id, item_id) is None:
+        raise HTTPException(status_code=404, detail="这一项不是这份行程里待补坐标的餐饮项")
+
+    written = meal_coords.pin_meal(
+        item_id,
+        lat_gcj02=payload.lat_gcj02,
+        lng_gcj02=payload.lng_gcj02,
+        address=payload.address,
+    )
+    if not written:
+        # 有人（或自动补齐）在这中间填上了。不是错误，但要如实说。
+        raise HTTPException(status_code=409, detail="这一项刚刚已经有坐标了，刷新看看")
+
+    return _pending_out(trip_id)

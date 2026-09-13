@@ -19,12 +19,12 @@
 
 from __future__ import annotations
 
-import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from html import escape
 
+from lushu.domain.geo import distance_m
 from lushu.domain.roadbook import (
     Roadbook,
     RoadbookBooking,
@@ -67,19 +67,14 @@ class _Point:
 
 
 def haversine_m(left: _Point, right: _Point) -> float | None:
-    """两点直线距离（米）。算不出来就返回 None，不猜。"""
+    """两点直线距离（米）。算不出来就返回 None，不猜。
+
+    算式在 `domain/geo.py`——餐饮候选排序用的是同一个（那边要按距离排），
+    两处各写一遍只会在某次改动后悄悄不一致。
+    """
     if not (left.located and right.located):
         return None
-    lat1, lon1, lat2, lon2 = (
-        math.radians(left.lat),  # type: ignore[arg-type]
-        math.radians(left.lng),  # type: ignore[arg-type]
-        math.radians(right.lat),  # type: ignore[arg-type]
-        math.radians(right.lng),  # type: ignore[arg-type]
-    )
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * 6371000 * math.asin(math.sqrt(a))
-
+    return distance_m(left.lat, left.lng, right.lat, right.lng)  # type: ignore[arg-type]
 
 def estimate_leg(left: _Point, right: _Point) -> RoadbookLeg | None:
     """把两点之间怎么走估出来。

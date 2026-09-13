@@ -403,6 +403,73 @@ export const fetchTripBooking = (tripId: string): Promise<TripBookingOut> =>
 export const bookingCalendarUrl = (tripId: string): string =>
   `/api/trips/${encodeURIComponent(tripId)}/booking.ics`
 
+// ─── 没有坐标的餐饮项（人工指定）───────────────────────────────
+
+/**
+ * 一处没有坐标的餐饮项。
+ *
+ * 机器分不清「绿柳居」的 24 家分店，人一眼就知道是夫子庙那家。这一组接口
+ * 就是那个人工入口：列出待办、摊开候选、按人选定的写进去。
+ */
+export interface PendingMealOut {
+  item_id: string
+  day_date: string
+  title: string
+  city_name: string
+  /** 当天有坐标的景点。人认店靠的是「就在哪儿附近」，所以要把它们说出来。 */
+  anchors: string[]
+}
+
+export interface PendingMealsOut {
+  trip_id: string
+  items: PendingMealOut[]
+}
+
+export interface MealCandidateOut {
+  poi_id: string
+  name: string
+  address: string | null
+  lat_gcj02: number
+  lng_gcj02: number
+  /** 离当天最近那处景点的距离。算不出是 null——**不是 0**。 */
+  distance_m: number | null
+  nearest_anchor: string | null
+  name_score: number
+}
+
+export interface MealCandidatesOut {
+  item_id: string
+  title: string
+  city_name: string
+  anchors: string[]
+  candidates: MealCandidateOut[]
+  total: number
+  note: string
+}
+
+export const fetchPendingMeals = (tripId: string): Promise<PendingMealsOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/pending-meals`)
+
+/** 候选要打高德，所以单独一个接口：点开某一项时才取，不在打开页面时取。 */
+export const fetchMealCandidates = (
+  tripId: string,
+  itemId: string,
+): Promise<MealCandidatesOut> =>
+  request(
+    `/api/trips/${encodeURIComponent(tripId)}/pending-meals/${encodeURIComponent(itemId)}/candidates`,
+  )
+
+/** 指定一处餐饮的位置。返回刷新后的待办清单。 */
+export const pinMeal = (
+  tripId: string,
+  itemId: string,
+  payload: { lat_gcj02: number; lng_gcj02: number; address?: string | null },
+): Promise<PendingMealsOut> =>
+  request(
+    `/api/trips/${encodeURIComponent(tripId)}/pending-meals/${encodeURIComponent(itemId)}`,
+    jsonInit(payload),
+  )
+
 // ─── 预约规则复核（工作台的第三类队列）─────────────────────────
 
 export interface BookingRuleOut {
