@@ -11,7 +11,7 @@ import type {
   TransferOut,
   TripInsightsOut,
 } from '@/lib/api'
-import { kindLabel, monthDay, weekday } from '@/lib/format'
+import { describeDue, kindLabel, monthDay, weekday } from '@/lib/format'
 
 /**
  * 驿道线：行程的签名元素。
@@ -494,19 +494,26 @@ function InsightList({ insights }: { insights: ItemInsightsOut }) {
           <div key={title}>
             <p className={`text-[11px] ${tone.split(' ')[1]}`}>{title}</p>
             <ul className="mt-0.5 space-y-1">
-              {claims.map((claim) => (
-                <li
-                  key={claim.claim_id}
-                  className={`border-l-2 pl-2.5 ${tone.split(' ')[0]}`}
-                >
-                  <p className="text-[13px] leading-relaxed text-ink-2">{claim.text}</p>
-                  <p className="data mt-0.5 text-[10px] text-ink-3">
-                    {claim.single_source
-                      ? '待验证的个例（只有 1 个来源）'
-                      : `${claim.independent_source_count} 个独立来源`}
-                  </p>
-                </li>
-              ))}
+              {claims.map((claim) => {
+                const due = describeDue(claim.verify_due_at)
+                const basis = claim.single_source
+                  ? '待验证的个例（只有 1 个来源）'
+                  : `${claim.independent_source_count} 个独立来源`
+                return (
+                  <li
+                    key={claim.claim_id}
+                    className={`border-l-2 pl-2.5 ${tone.split(' ')[0]}`}
+                  >
+                    <p className="text-[13px] leading-relaxed text-ink-2">{claim.text}</p>
+                    <p className="data mt-0.5 text-[10px] text-ink-3">
+                      {basis}
+                      {/* 过期不隐藏，只标注（设计 4.6）。用墨色不用朱砂：
+                          朱砂留给「计划会失败」的那三件事，一条旧经验还不是。 */}
+                      {due ? ` · ${due}` : ''}
+                    </p>
+                  </li>
+                )
+              })}
             </ul>
           </div>
         ) : null,

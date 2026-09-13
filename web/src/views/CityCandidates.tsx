@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { fetchCityPool, type CandidateOut, type CityPoolOut, type ClaimBriefOut } from '@/lib/api'
+import { describeDue, fullDate } from '@/lib/format'
 
 /**
  * 城市页：这座城市有什么可去的。
@@ -203,6 +204,17 @@ function CandidateCard({ item }: { item: CandidateOut }) {
  */
 const CLAIMS_SHOWN = 3
 
+/**
+ * 复验那一句。到期只标注不隐藏（设计 4.6）——过期的经验仍然展示，
+ * 但用户得知道自己看的是旧信息。还没到期的照常印出到期日，
+ * 「还有多久要重核」本身也是有用的信息。
+ */
+function dueNote(iso: string | null): string {
+  const due = describeDue(iso)
+  if (due) return ` · ${due}`
+  return iso ? ` · 复验到期 ${fullDate(iso)}` : ''
+}
+
 function ClaimGroup({
   title,
   claims,
@@ -229,7 +241,7 @@ function ClaimGroup({
               {claim.confidence === 'high'
                 ? `${claim.independent_source_count} 个独立来源`
                 : '待验证的个例（只有 1 个来源）'}
-              {claim.verify_due_at ? ` · 复验到期 ${claim.verify_due_at}` : ''}
+              {dueNote(claim.verify_due_at)}
             </p>
           </li>
         ))}

@@ -2,7 +2,7 @@
 
 M0 阶段提供 `serve`、`init-db`、`doctor`。M3 阶段加入数据链路与评测的子命令。
 
-M4 的 `booking`、`verify` 还没做，这里**不注册空壳**——命令列表应当如实
+`booking` 与 `verify` 都已就位，这里**不注册空壳**——命令列表应当如实
 反映能力，而不是列出一堆点了就报错的入口。计划中的命令写在 `serve`
 帮助的末尾备查。
 """
@@ -12,12 +12,15 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lushu import __version__, config
 
+if TYPE_CHECKING:  # 只为了标注。命令实现在函数里按需导入，启动代价是零
+    from lushu.services.verify import DueItem
+
 PLANNED_PIPELINE = """\
 还没做的子命令（M7 起）：
-  verify scan                     复验到期扫描
   poi warm                        按城市预热高德 POI
 """
 
@@ -50,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_pipeline(sub)
     _register_eval(sub)
     _register_booking(sub)
+    _register_verify(sub)
     _register_export(sub)
 
     args = parser.parse_args(argv)
@@ -243,6 +247,34 @@ def _register_booking(sub) -> None:
     ics.set_defaults(_handler=_cmd_booking_ics)
 
     booking.set_defaults(_handler=lambda _args: _usage(booking))
+
+
+def _register_verify(sub) -> None:
+    """复验扫描（设计 4.6 / Q49）。
+
+    到期是个静默事件：库里那行数据一个字都没变，界面上也看不出异样，
+    用户看到的仍然是三个月前核的那个放票时刻。所以要有这么一条命令，
+    而且它默认只报不改——改状态是 `--apply`，得有人明确说要改。
+    """
+    verify = sub.add_parser("verify", help="复验：哪些结论与规则已经该重新核了")
+    actions = verify.add_subparsers(dest="action")
+
+    scan = actions.add_parser("scan", help="扫描到期与快到期的东西")
+    scan.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="提前多少天开始提醒，默认 14。调大它回答的是「出发前哪些会到期」",
+    )
+    scan.add_argument(
+        "--apply",
+        action="store_true",
+        help="把已经过期的结论标成待复验（只改状态，不删、界面上照样展示）",
+    )
+    scan.add_argument("--today", help="按这一天算，格式 YYYY-MM-DD（核对用）")
+    scan.set_defaults(_handler=_cmd_verify_scan)
+
+    verify.set_defaults(_handler=lambda _args: _usage(verify))
 
 
 def _register_export(sub) -> None:
@@ -662,6 +694,91 @@ def _review_all(args: argparse.Namespace) -> int:
         print("已对用户可见。每条 90 天后到期复验——预约规则会变，")
         print("湖南博物院 2026-07 刚从「提前 7 天」改成「提前 5 天」就是一个例子。")
     return 0 if not skipped else 1
+
+
+def _cmd_verify_scan(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from lushu.services import verify
+    from lushu.store import connect
+
+    today = date.fromisoformat(args.today) if args.today else date.today()
+    window = verify.SOON_DAYS if args.days is None else args.days
+    conn = connect()
+    try:
+        report = verify.scan(conn=conn, today=today, soon_days=window)
+        upcoming = verify.next_due(conn=conn, today=today)
+        if args.apply:
+            changed = verify.mark_due_claims(conn=conn, today=today)
+    finally:
+        conn.close()
+
+    print(f"复验扫描（{today}，提前 {window} 天提醒）")
+    print()
+
+    if not report.items:
+        print("没有到期或快到期的。")
+    else:
+        overdue = report.overdue
+        if overdue:
+            print(f"已经过期 {len(overdue)} 件——这些正在被用户当成当前信息看：")
+            for item in overdue:
+                print(f"  {_due_line(item)}")
+            print()
+        soon = report.soon
+        if soon:
+            print(f"{window} 天内到期 {len(soon)} 件：")
+            for item in soon:
+                print(f"  {_due_line(item)}")
+            print()
+
+    # 「今天没事」与「以后也没事」不是一回事，所以要说清下一次是什么时候
+    if report.overdue:
+        print("先把上面过期的那几件核掉，再看下一次。")
+    elif upcoming is not None:
+        left = (upcoming - today).days
+        print(f"下一次到期 {upcoming}（还有 {left} 天）。")
+    else:
+        print("今天之后没有会到期的了——只有不设期限的那一类（拍照机位等）。")
+
+    hit_rules = len(report.rules)
+    print()
+    print(
+        "扫描范围：已复核的预约规则与未被废弃的结论。"
+        f"本次命中 规则 {hit_rules} 条、结论 {len(report.claims)} 条；"
+        f"不设期限的结论 {report.timeless} 条（不报不代表没问题，代表这类信息不该过期）。"
+    )
+
+    if not args.apply:
+        if report.overdue:
+            print()
+            print("上面这些还是 active 状态。加 --apply 把它们标成待复验：")
+            print("  只改状态，不删内容，界面上照样展示并标注「复验已到期」。")
+        return 0
+
+    print()
+    if changed:
+        print(f"已标为待复验 {len(changed)} 条：")
+        for claim_id in changed:
+            print(f"  {claim_id}")
+        print("内容都在，界面上多一个「复验已到期」的标注（设计 4.6：标注而不隐藏）。")
+    else:
+        print("没有需要改状态的（已经过期的那几条本来就已是待复验）。")
+
+    # 规则不在这个开关的管辖范围内，而且这是有意的：把一条规则打回草案，
+    # 用户那边的提醒就消失了，他会以为「这个景点不用预约」——正是本项目
+    # 最怕的失败模式。所以规则照常提醒，只是标注「复验已到期」。
+    if report.rules and report.overdue:
+        print()
+        print("预约规则不跟着改状态，这是有意的：打回草案会让用户以为「不用预约」，")
+        print("而规则错一个字段就要白跑一趟。它们照常提醒，只是标注复验已到期。")
+    return 0
+
+
+def _due_line(item: DueItem) -> str:
+    """一行一件。名字在前，因为翻报告的是人的眼睛，不是 diff 工具。"""
+    detail = f"　{item.detail}" if item.detail else ""
+    return f"{item.description:<10} {item.due_at}  {item.label}{detail}"
 
 
 def _usage(parser: argparse.ArgumentParser) -> int:
