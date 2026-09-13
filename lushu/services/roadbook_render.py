@@ -74,7 +74,11 @@ h3{font-size:.8rem;font-weight:600;margin:.7rem 0 .3rem}
   font-size:.82rem;color:var(--ink2)}
 .claims li.hl{border-color:var(--malachite)}
 .claims li.av{border-color:var(--azurite)}
-.claims li .src{color:var(--ink3);font-size:.72rem;margin-left:.35rem;white-space:nowrap}
+.claims li .src{display:block;color:var(--ink3);font-size:.72rem;margin-top:.1rem}
+/* 窄屏上禁止折行会把整页撑宽——这一页的硬约束是「手机优先、窄屏单列，
+   触控目标够大、字号按手机阅读定」。真机上实测报出过「要左右拖才看得全」，
+   所以这里不只是一条风格约定。 */
+.item .body,.claims li,.item .addr,.leg,.theme,footer{overflow-wrap:break-word}
 .leg{margin:.35rem 0 .35rem 3.6rem;font-size:.8rem;color:var(--ink2)}
 .leg a{color:var(--azurite)}
 .leg .est{color:var(--ink3)}

@@ -4,7 +4,9 @@
 接口打一遍。它当时扫出了三个真的坏掉的地方，都不是「接口报错」，而是
 「接口给出了一个看起来正常的假答案」：
 
-1. `.ics` 的时区块被折行切坏（`DTSTART:19700101T00000` + `0`），客户端静默不认；
+1. `.ics` 的时区块被折行切坏（那份产物后来发现还有两处 RFC 5545 的 MUST
+   违规，手机日历一个事件都不认——日历导出这个功能已因此被放弃，见
+   `docs/M7-STATUS.md`）；
 2. 「知识库没覆盖的城市直接搜高德」那条路因为一个签名不匹配**从来没工作过**；
 3. 天气两个来源都没取到时，来源照样写着「高德」。
 
@@ -92,32 +94,6 @@ class TestEmptyTripAnswersHonestly:
         assert "<!doctype html>" in html
 
 
-class TestCalendarForAnEmptyTrip:
-    """没有预约条目时，导出的仍然必须是一份**合法**的 iCalendar。"""
-
-    def test_calendar_is_still_well_formed(self, api_client, skeleton_trip) -> None:
-        text = api_client.get(f"/api/trips/{skeleton_trip}/booking.ics").text
-
-        assert text.startswith("BEGIN:VCALENDAR")
-        assert text.strip().endswith("END:VCALENDAR")
-        assert "BEGIN:VEVENT" not in text, "没有预约条目就不该有事件"
-
-    def test_timezone_block_survives_whole(self, api_client, skeleton_trip) -> None:
-        """时区块必须原样出现。
-
-        原先它整块被当成**一个逻辑行**交给折行函数，在累计第 75 字节处硬切，
-        于是产物里根本没有 `DTSTART:19700101T000000` 与 `END:VTIMEZONE`——
-        一份坏掉的日历，而客户端对它静默不认。空行程恰好把这个错照了出来：
-        没有事件可看的时候，剩下的全是信封。
-        """
-        lines = api_client.get(f"/api/trips/{skeleton_trip}/booking.ics").text.split("\r\n")
-
-        assert "DTSTART:19700101T000000" in lines
-        assert "END:VTIMEZONE" in lines
-        for line in lines:
-            assert len(line.encode("utf-8")) <= 75
-
-
 class TestUnknownTripIs404Everywhere:
     """不存在的行程，每个子资源都要说同一句话，而不是各自编一个。"""
 
@@ -130,9 +106,6 @@ class TestUnknownTripIs404Everywhere:
 
         assert response.status_code == 404
         assert "trip_nope" in response.text
-
-    def test_calendar_is_404_too(self, api_client) -> None:
-        assert api_client.get("/api/trips/trip_nope/booking.ics").status_code == 404
 
 
 class TestDegenerateRequests:

@@ -1,9 +1,4 @@
-import {
-  bookingCalendarUrl,
-  type BookingAlertOut,
-  type TripBookingOut,
-  type Urgency,
-} from '@/lib/api'
+import type { BookingAlertOut, TripBookingOut, Urgency } from '@/lib/api'
 
 /**
  * 预约清单。
@@ -31,11 +26,9 @@ import {
 export function BookingPanel({
   data,
   error,
-  tripId,
 }: {
   data: TripBookingOut | null
   error: string | null
-  tripId: string
 }) {
 
   if (error) {
@@ -62,14 +55,6 @@ export function BookingPanel({
     <section className="rounded border border-rule bg-paper-card p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
         <h2 className="font-display text-xl">预约</h2>
-        {data.alerts.length ? (
-          <a
-            href={bookingCalendarUrl(tripId)}
-            className="rounded border border-rule px-3 py-1 text-sm text-ink-2 no-underline hover:border-azurite"
-          >
-            导出日历提醒
-          </a>
-        ) : null}
       </div>
 
       {urgent.length ? (
@@ -82,7 +67,8 @@ export function BookingPanel({
       {data.alerts.length ? (
         <>
           <p className="mt-1 mb-4 text-sm text-ink-2">
-            按放票日倒排。导出日历之后，提醒会由手机系统负责——这个工具不会一直开着。
+            按放票日倒排。**提醒只在你打开这份行程时看得到**——它不会主动找你，
+            所以到了该抢票的那几天，记得回来一趟。
           </p>
           <ol className="space-y-3">
             {data.alerts.map((alert) => (
@@ -93,23 +79,6 @@ export function BookingPanel({
       ) : (
         <EmptyBody pendingReview={data.pending_review} />
       )}
-
-      {data.calendar_skipped.length ? (
-        // 合成的日历里少的那一条，必须在这里说出来。
-        //
-        // 原先这条信息只写在 `.ics` 响应的 `X-Booking-Skipped` 头里，而下载
-        // 链接是普通 `<a href>`——**浏览器下载文件时响应头没有人看得到**，
-        // 于是界面从头到尾没说，用户导入日历后会以为兵马俑不用预约。
-        // 这类景点的规则是**已复核的**（所以它们在下面的清单里），只是没写
-        // 提前几天放票、算不出放票日。与「规则还没复核」是两件事，
-        // 分开说，免得有人去查错地方。
-        <p className="mt-3 rounded border border-rule bg-paper-card px-4 py-3 text-xs leading-relaxed text-ink-3">
-          {data.calendar_skipped.join('、')} 的规则里没有「提前几天放票」这个数，
-          算不出放票日，所以**它们不在导出的日历里**（上面清单里的其余条目都在）。
-          这不等于不用预约——到官方渠道确认一次口径，回来到数据工作台把那个数补上，
-          它们就会进日历。
-        </p>
-      ) : null}
 
       {data.alerts.length && data.pending_review.length ? (
         <p className="mt-4 border-t border-rule pt-3 text-xs leading-relaxed text-ink-3">

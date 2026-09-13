@@ -285,6 +285,7 @@ class TestAssemble:
 
 
 class TestRender:
+
     def _html(self, db: Path, **kwargs: object) -> str:
         _seed(db, **kwargs)  # type: ignore[arg-type]
         book, _ = service.assemble("trip_1", conn=connect(db))
@@ -365,6 +366,25 @@ class TestRender:
         assert "离线生成" in html
         assert "以官方渠道为准" in html
         assert "估算" in html
+
+    def test_nothing_forbids_wrapping(self, db: Path) -> None:
+        """窄屏上禁止折行会把整页撑宽，要左右拖才看得全。
+
+        这一条是**真机实测出来的**：`.claims li .src` 上原先有一句
+        `white-space:nowrap`（给每条结论加来源数时顺手写的），于是
+        「待验证的个例（只有 1 个来源）」这十六个字不许折行。这一页的硬约束是
+        「手机优先、窄屏单列」，而真机上报出来的症状正是横向溢出。
+        """
+        html = self._html(db, with_claims=True)
+
+        assert "nowrap" not in html
+        assert "white-space:pre" not in html
+
+    def test_source_note_gets_its_own_line(self, db: Path) -> None:
+        """来源数另起一行。挤在结论末尾时窄屏上会被迫换行，读起来也乱。"""
+        html = self._html(db, with_claims=True)
+
+        assert ".claims li .src{display:block" in html
 
     def test_is_small_enough_for_a_phone(self, db: Path) -> None:
         assert len(self._html(db).encode("utf-8")) < 60_000

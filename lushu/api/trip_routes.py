@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import Response
@@ -214,10 +213,6 @@ class TripBookingOut(BaseModel):
     # 行程里有规则、但规则还是草案（未经复核）的景点名。
     # 「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
     pending_review: list[str]
-    # 规则**已复核**、但没写提前天数所以算不出放票日的景点——它们的提醒进不了
-    # 日历。与 `pending_review` 是两类不同的缺席，界面上要分开说：这一类的
-    # 处置办法是去补那个数（或到官方渠道确认口径），不是去复核。
-    calendar_skipped: list[str] = Field(default_factory=list)
 
 
 class TripDetailOut(BaseModel):
@@ -751,7 +746,7 @@ def trip_booking(
     （Q10 的硬门禁），少提醒是对的，但不能让用户以为那个景点不用预约——
     「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
     """
-    from lushu.services import booking_store, ics
+    from lushu.services import booking_store
 
     stored = trip_service.get_trip(trip_id)
     if stored is None:
@@ -759,12 +754,6 @@ def trip_booking(
 
     alerts = booking_store.alerts_for_trip(trip_id, today=today)
     pending = booking_store.pending_rule_pois(trip_id)
-    # 判据与日历产物同源（`ics.split_schedulable`）。这两个名字是**两类不同的
-    # 缺席**：`pending_review` 是规则还没复核，`calendar_skipped` 是规则已复核
-    # 但没写提前天数、算不出放票日。合成的产物（日历）里少的那一条，
-    # 只有这个字段说得出来——响应头里的 `X-Booking-Skipped` 在浏览器下载时
-    # 没人看得见，界面也就一直没说。
-    _ready, can_not_schedule = ics.split_schedulable(alerts)
 
     return TripBookingOut(
         trip_id=trip_id,
@@ -791,36 +780,7 @@ def trip_booking(
             for alert in alerts
         ],
         pending_review=pending,
-        calendar_skipped=can_not_schedule,
     )
-
-
-@router.get("/trips/{trip_id}/booking.ics", summary="预约清单日历")
-def trip_booking_calendar(trip_id: str) -> Response:
-    """把这份行程的预约提醒导出成 .ics。
-
-    这是预约子系统唯一的**推送**通道：本项目是本地工具，用户不会一直开着它，
-    而预约的要害是时点。把提醒交给手机系统日历，比在界面上标红有用得多。
-
-    只包含**已复核**的规则（Q10）。草案规则被静默跳过，所以响应头里带上
-    `X-Booking-Skipped`，把「因为规则还没复核所以没提醒」的景点名列出来——
-    宁可少提醒，但不能让用户以为那个景点不用预约。
-    """
-    from lushu.services import ics
-
-    stored = trip_service.get_trip(trip_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
-
-    text, skipped, name = ics.calendar_for_trip(trip_id)
-
-    headers = {
-        # 中文文件名要按 RFC 5987 编码，直接写中文在部分浏览器上会乱码
-        "Content-Disposition": f"attachment; filename=\"booking.ics\"; filename*=UTF-8''{quote(name)}.ics",
-        "X-Booking-Skipped": quote("、".join(skipped)) if skipped else "",
-        "Cache-Control": "no-store",
-    }
-    return Response(content=text, media_type="text/calendar; charset=utf-8", headers=headers)
 
 
 @router.get("/cities/resolve", response_model=list[CityOut], summary="解析城市")

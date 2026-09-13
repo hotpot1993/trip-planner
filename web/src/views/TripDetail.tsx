@@ -117,7 +117,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
 
       {/* 预约排在行程前面：时点比行程本身更紧急。
           用户打开这份行程时真正可能已经晚了的事，是某个景点的票几天前放过了。 */}
-      <BookingPanel data={booking} error={bookingError} tripId={trip.id} />
+      <BookingPanel data={booking} error={bookingError} />
 
       {/* 待补坐标的餐饮项排在行程前面：它们直接决定路书里那几段路说明有没有。
           没有坐标的地方，路书只能写「按名字问路」。 */}
