@@ -94,6 +94,23 @@ export function BookingPanel({
         <EmptyBody pendingReview={data.pending_review} />
       )}
 
+      {data.calendar_skipped.length ? (
+        // 合成的日历里少的那一条，必须在这里说出来。
+        //
+        // 原先这条信息只写在 `.ics` 响应的 `X-Booking-Skipped` 头里，而下载
+        // 链接是普通 `<a href>`——**浏览器下载文件时响应头没有人看得到**，
+        // 于是界面从头到尾没说，用户导入日历后会以为兵马俑不用预约。
+        // 这类景点的规则是**已复核的**（所以它们在下面的清单里），只是没写
+        // 提前几天放票、算不出放票日。与「规则还没复核」是两件事，
+        // 分开说，免得有人去查错地方。
+        <p className="mt-3 rounded border border-rule bg-paper-card px-4 py-3 text-xs leading-relaxed text-ink-3">
+          {data.calendar_skipped.join('、')} 的规则里没有「提前几天放票」这个数，
+          算不出放票日，所以**它们不在导出的日历里**（上面清单里的其余条目都在）。
+          这不等于不用预约——到官方渠道确认一次口径，回来到数据工作台把那个数补上，
+          它们就会进日历。
+        </p>
+      ) : null}
+
       {data.alerts.length && data.pending_review.length ? (
         <p className="mt-4 border-t border-rule pt-3 text-xs leading-relaxed text-ink-3">
           {data.pending_review.join('、')} 的预约规则还没复核，所以这里没有它们的提醒。

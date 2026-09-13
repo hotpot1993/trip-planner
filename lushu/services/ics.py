@@ -234,6 +234,30 @@ def build_event(
     return lines
 
 
+def split_schedulable(
+    alerts: Sequence[BookingAlert],
+) -> tuple[list[BookingAlert], list[str]]:
+    """分成（能生成事件的，算不出放票日的景点名）。
+
+    **这是「哪些进得了日历」的唯一判据。** `build_calendar` 用它，`/booking`
+    接口也用它——两处各写一遍的话，会出现「界面上说都在里面了，产物却少一条」，
+    而那是这类系统里最难发现的一种不一致：用户照界面上的话去信，日历里却没提醒。
+
+    「算不出放票日」的原因只有一种（`BookingRule.release_date_for`：规则里没有
+    `advance_days`）。**未复核的草案根本走不到这里**——`alerts_for_trip` 只从已复核
+    的规则生成清单，所以这条提示不该再提「或者规则还没复核」：那是另一件事
+    （`pending_review`），把它混进来说会让人去查错地方。
+    """
+    ready: list[BookingAlert] = []
+    waiting: list[str] = []
+    for alert in alerts:
+        if alert.release_date is None:
+            waiting.append(alert.poi_name)
+        else:
+            ready.append(alert)
+    return ready, waiting
+
+
 def build_calendar(
     alerts: Sequence[BookingAlert],
     *,
@@ -244,16 +268,16 @@ def build_calendar(
 
     返回（日历文本，跳过的景点名）。**跳过的要报出来**：算不出放票日的规则
     生不成事件，静默少一条会让用户以为那个景点不用预约——这恰恰是设计里
-    最怕的失败模式。
+    最怕的失败模式。调用方拿到这个列表之后**必须让它到得了用户眼前**：
+    接口那边有一条 `X-Booking-Skipped` 响应头，但浏览器下载文件时没人看得到
+    响应头，所以它同时进了 `/booking` 的 JSON（`calendar_skipped`），
+    由界面说出来。
     """
     stamp = now or datetime.now()
-    skipped: list[str] = []
-    events: list[list[str]] = []
-    for alert in alerts:
-        if alert.release_date is None:
-            skipped.append(alert.poi_name)
-            continue
-        events.append(build_event(alert, trip_name=trip_name, now=stamp))
+    schedulable, skipped = split_schedulable(alerts)
+    events: list[list[str]] = [
+        build_event(alert, trip_name=trip_name, now=stamp) for alert in schedulable
+    ]
 
     raw: list[str] = [
         "BEGIN:VCALENDAR",

@@ -78,7 +78,7 @@ def _poi_and_visit(api_client, trip_id: str) -> str:
     return "B000A8UIN8"
 
 
-def _rule(poi_id: str, *, reviewed: bool) -> None:
+def _rule(poi_id: str, *, reviewed: bool, advance_days: int | None = 7) -> None:
     from lushu.config import DB_PATH
     from lushu.domain.booking import BookingRule, Channel, ChannelKind, RuleStatus
     from lushu.store import connect as real_connect
@@ -92,7 +92,7 @@ def _rule(poi_id: str, *, reviewed: bool) -> None:
                     poi_id=poi_id,
                     booking_required=True,
                     status=RuleStatus.REVIEWED if reviewed else RuleStatus.DRAFT,
-                    advance_days=7,
+                    advance_days=advance_days,
                     release_time="20:00",
                     channels=(Channel("官方小程序", ChannelKind.MINIAPP, "https://example.cn/"),),
                     requires_real_name=True,
@@ -289,3 +289,112 @@ class TestBookingList:
 
     def test_missing_trip_is_404(self, api_client, stub_cities) -> None:
         assert api_client.get("/api/trips/trip_nope/booking").status_code == 404
+
+
+def _second_visit(trip_id: str, *, poi_id: str, name: str, item_id: str, day_index: int) -> None:
+    """给这份行程的第 day_index 天再排一个景点，并写进 poi 表。"""
+    from lushu.config import DB_PATH
+    from lushu.store import connect as real_connect
+
+    conn = real_connect(DB_PATH)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, "
+                "typecode, lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                "(?, ?, '110100', '110101', '110201', 39.88, 116.41, '2026-09-12')",
+                (poi_id, name),
+            )
+            day = conn.execute(
+                "SELECT id FROM day WHERE trip_id = ? ORDER BY date LIMIT 1 OFFSET ?",
+                (trip_id, day_index),
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO day_item (id, day_id, seq, kind, poi_id, title, origin) "
+                "VALUES (?, ?, 0, 'poi', ?, ?, 'ai')",
+                (item_id, day["id"], poi_id, name),
+            )
+    finally:
+        conn.close()
+
+
+class TestCalendarSkippedIsVisible:
+    """进不了日历的那些景点，**界面必须说出来**。
+
+    这条信息原先只写在 `.ics` 响应的 `X-Booking-Skipped` 头里，而界面上的下载
+    是一个普通 `<a href>`——**浏览器下载文件时响应头没有人看得到**。于是真机上
+    的表现是：预约清单里有 2 条、导入的日历里只有 1 个事件，中间少的那一条
+    界面上一个字都没提，用户会以为那个景点不用预约。设计把「预约规则错误」
+    列为唯一会直接让人白跑一趟的失败模式，所以这里不能靠一个看不见的头。
+
+    `calendar_skipped` 与 `pending_review` 是**两类不同的缺席**：前者是规则已复核
+    但没写提前天数（处置办法是补那个数），后者是规则还是草案（处置办法是去复核）。
+    混在一起说会让人查错地方。
+    """
+
+    def test_a_reviewed_rule_without_advance_days_is_reported(
+        self, api_client, stub_cities
+    ) -> None:
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        # 已复核，但没写提前几天放票 → 算不出放票日 → 进不了日历
+        _rule(poi_id, reviewed=True, advance_days=None)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
+
+        assert [alert["poi_name"] for alert in payload["alerts"]] == ["故宫博物院"]
+        assert payload["calendar_skipped"] == ["故宫博物院"]
+        # 它不是「还没复核」——那条规则是复核过的
+        assert payload["pending_review"] == []
+
+    def test_the_ui_field_matches_what_the_calendar_contains(
+        self, api_client, stub_cities
+    ) -> None:
+        """契约：清单条数 − 跳过的条数 = 日历里的事件数。
+
+        界面说的与产物里的必须是同一件事——两边各算各的正是这个 bug 的成因。
+        """
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+        _second_visit(
+            trip_id, poi_id="B000A8UIN9", name="天坛公园", item_id="di_test2", day_index=1
+        )
+        _rule("B000A8UIN9", reviewed=True, advance_days=None)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
+        calendar = api_client.get(f"/api/trips/{trip_id}/booking.ics").text
+
+        assert len(payload["alerts"]) == 2
+        assert payload["calendar_skipped"] == ["天坛公园"]
+        assert (
+            len(payload["alerts"]) - len(payload["calendar_skipped"])
+            == calendar.count("BEGIN:VEVENT")
+        )
+
+    def test_the_two_kinds_of_absence_are_not_mixed(self, api_client, stub_cities) -> None:
+        """草案与「算不出放票日」是两个字段，不能互相冒充。"""
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=False)
+        _second_visit(
+            trip_id, poi_id="B000A8UIN9", name="天坛公园", item_id="di_test2", day_index=1
+        )
+        _rule("B000A8UIN9", reviewed=True, advance_days=None)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
+
+        assert payload["pending_review"] == ["故宫博物院"]
+        assert payload["calendar_skipped"] == ["天坛公园"]
+
+    def test_a_trip_where_everything_is_schedulable_says_nothing(
+        self, api_client, stub_cities
+    ) -> None:
+        """都进得去时这个字段是空的——界面不该常驻一句没用的提醒。"""
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
+
+        assert payload["calendar_skipped"] == []

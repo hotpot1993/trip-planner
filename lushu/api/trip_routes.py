@@ -214,6 +214,10 @@ class TripBookingOut(BaseModel):
     # 行程里有规则、但规则还是草案（未经复核）的景点名。
     # 「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
     pending_review: list[str]
+    # 规则**已复核**、但没写提前天数所以算不出放票日的景点——它们的提醒进不了
+    # 日历。与 `pending_review` 是两类不同的缺席，界面上要分开说：这一类的
+    # 处置办法是去补那个数（或到官方渠道确认口径），不是去复核。
+    calendar_skipped: list[str] = Field(default_factory=list)
 
 
 class TripDetailOut(BaseModel):
@@ -747,7 +751,7 @@ def trip_booking(
     （Q10 的硬门禁），少提醒是对的，但不能让用户以为那个景点不用预约——
     「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
     """
-    from lushu.services import booking_store
+    from lushu.services import booking_store, ics
 
     stored = trip_service.get_trip(trip_id)
     if stored is None:
@@ -755,6 +759,12 @@ def trip_booking(
 
     alerts = booking_store.alerts_for_trip(trip_id, today=today)
     pending = booking_store.pending_rule_pois(trip_id)
+    # 判据与日历产物同源（`ics.split_schedulable`）。这两个名字是**两类不同的
+    # 缺席**：`pending_review` 是规则还没复核，`calendar_skipped` 是规则已复核
+    # 但没写提前天数、算不出放票日。合成的产物（日历）里少的那一条，
+    # 只有这个字段说得出来——响应头里的 `X-Booking-Skipped` 在浏览器下载时
+    # 没人看得见，界面也就一直没说。
+    _ready, can_not_schedule = ics.split_schedulable(alerts)
 
     return TripBookingOut(
         trip_id=trip_id,
@@ -781,6 +791,7 @@ def trip_booking(
             for alert in alerts
         ],
         pending_review=pending,
+        calendar_skipped=can_not_schedule,
     )
 
 

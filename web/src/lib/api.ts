@@ -396,6 +396,11 @@ export interface TripBookingOut {
   alerts: BookingAlertOut[]
   /** 有规则但规则还是草案的景点。清单里没有 ≠ 不用预约。 */
   pending_review: string[]
+  /**
+   * 规则已复核、但没写提前天数所以算不出放票日的景点——**它们的提醒进不了
+   * 导出的日历**。与 `pending_review` 是两类不同的缺席。
+   */
+  calendar_skipped: string[]
 }
 
 export const fetchTripBooking = (tripId: string): Promise<TripBookingOut> =>

@@ -819,7 +819,11 @@ def _cmd_booking_ics(args: argparse.Namespace) -> int:
         print("这些景点算不出放票日，没有生成提醒：")
         for item in skipped:
             print(f"  {item}")
-        print("要么规则里没写提前天数，要么规则还没复核（草案不对用户可见）")
+        # 原因只有一种：规则里没有 `advance_days`。原先这里写成「要么规则里没写
+        # 提前天数，要么规则还没复核」——后半句是错的：未复核的草案根本不会
+        # 变成 alert（`alerts_for_trip` 只从已复核的规则生成清单），所以它到不了
+        # 这里。含糊其辞会让人去查错地方（跑去复核一条本来就复核过的规则）。
+        print("原因是规则里没有「提前几天放票」这个数——补上它，提醒就会进日历")
     else:
         print(f"《{name}》的预约提醒都在里面了。导入手机日历即可。", file=sys.stderr)
     return 0
