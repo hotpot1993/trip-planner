@@ -180,6 +180,14 @@ def name_score(mention: str, candidate: str) -> float:
     if left == right:
         return 1.0
 
+    if _fold_brackets(left) == _fold_brackets(right):
+        # 全角/半角括号是纯排版差异，但比对是按字符来的。
+        # 「南京大牌档（中山陵店）」与「南京大牌档(中山陵店)」只差括号宽度时，
+        # 逐字比例只剩 0.74，而「南京大牌档」（品牌名）因为整体包含拿到 0.90——
+        # **分店会被品牌顶掉，坐标落到总店去。** 高德两种括号都用过
+        # （库里「苏州博物馆（本馆）」对上的就是「苏州博物馆(本馆)」）。
+        return 1.0
+
     if _strip_generic_suffix(left) == _strip_generic_suffix(right):
         return 0.95
 
@@ -202,6 +210,15 @@ def name_score(mention: str, candidate: str) -> float:
 
 # 高德给「本体内部的一个点」命名时用的连接符：`故宫博物院-午门`。
 _SEPARATORS = ("-", "－", "—", "·", "(", "（", "_")
+
+# 括号的全角/半角归一。只折括号，不折别的标点：句读、间隔号在中文名字里
+# 可能是有意义的（「全聚德·烤鸭店」），而括号只用来括分店名或别名。
+_BRACKET_FOLD = str.maketrans({"（": "(", "）": ")", "〔": "(", "〕": ")", "【": "(", "】": ")"})
+
+
+def _fold_brackets(name: str) -> str:
+    return name.translate(_BRACKET_FOLD)
+
 
 
 def _follows_separator(needle: str, haystack: str) -> bool:

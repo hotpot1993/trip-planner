@@ -80,6 +80,27 @@ class TestNameScore:
     def test_unrelated_names_score_low(self) -> None:
         assert name_score("回民街", "秦始皇兵马俑博物馆第1停车场") < 0.30
 
+    def test_bracket_width_does_not_matter(self) -> None:
+        """全角与半角括号是纯排版差异，不该影响得分。
+
+        这条是补餐饮坐标时撞出来的：库里存的是「南京大牌档（中山陵店）」，
+        高德给的是「南京大牌档(中山陵店)」，逐字比例只剩 0.74；
+        而品牌名「南京大牌档」因为整体包含拿到 0.90——**分店被品牌顶掉，
+        坐标落到总店去**，相差两公里而名字看着一模一样。
+
+        实测库里已经有一例同类：「苏州博物馆（本馆）」对的是
+        「苏州博物馆(本馆)」。
+        """
+        assert name_score("南京大牌档（中山陵店）", "南京大牌档(中山陵店)") == 1.0
+        assert name_score("苏州博物馆（本馆）", "苏州博物馆(本馆)") == 1.0
+
+    def test_bracket_width_does_not_flip_the_winner(self) -> None:
+        """上面的实际后果：分店必须赢过品牌名。"""
+        branch = name_score("南京大牌档（中山陵店）", "南京大牌档(中山陵店)")
+        brand = name_score("南京大牌档（中山陵店）", "南京大牌档")
+
+        assert branch > brand
+
     def test_huimin_street_beats_huimin_street_homestay(self) -> None:
         assert name_score("回民街", "回民街") > name_score("回民街", "西安回民街家庭民宿")
 

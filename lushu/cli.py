@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_eval(sub)
     _register_booking(sub)
     _register_verify(sub)
+    _register_trip(sub)
     _register_export(sub)
 
     args = parser.parse_args(argv)
@@ -300,6 +301,80 @@ def _register_verify(sub) -> None:
     scan.set_defaults(_handler=_cmd_verify_scan)
 
     verify.set_defaults(_handler=lambda _args: _usage(verify))
+
+
+def _register_trip(sub) -> None:
+    """行程级的数据维护。
+
+    这里放的是「已经生成好的行程，数据还没补齐」这一类活儿——
+    它们不影响新行程（新行程走的是修好之后的转换层），只影响历史数据。
+    """
+    trip = sub.add_parser("trip", help="已有行程的数据维护")
+    actions = trip.add_subparsers(dest="action")
+
+    coords = actions.add_parser("coords", help="给缺坐标的餐饮天项补坐标")
+    coords.add_argument("trip_id", nargs="?", help="行程 id，不给就处理全部行程")
+    coords.add_argument("--apply", action="store_true", help="写进库里；不给就只报算出来的结果")
+    coords.add_argument("--pause", type=float, default=None, help="每次搜索之间歇几秒，默认 0.4")
+    coords.set_defaults(_handler=_cmd_trip_coords)
+
+    trip.set_defaults(_handler=lambda _args: _usage(trip))
+
+
+def _cmd_trip_coords(args: argparse.Namespace) -> int:
+    """给缺坐标的餐饮天项补坐标。
+
+    默认只报不改。补一条错的坐标比留空更坏：路书的坐标是**唯一的空间线索**
+    （没有地图），「步行 800 米」就是拿它算出来的——错了看不出来。
+    """
+    from lushu.services import meal_coords
+
+    slots = meal_coords.pending_meals(trip_id=args.trip_id)
+    scope = args.trip_id or "全部行程"
+    print(f"缺坐标的餐饮项：{len(slots)} 个（{scope}）")
+    if not slots:
+        print()
+        print("没有要补的。")
+        return 0
+
+    interval = meal_coords.PAUSE_SECONDS if args.pause is None else args.pause
+    print(f"逐个到高德查一遍，每次间隔 {interval} 秒（QPS 限制）")
+    print()
+
+    from lushu.adapters.poi import search_pois
+
+    report = meal_coords.plan_fill(
+        slots,
+        search=lambda keywords, city: search_pois(keywords, city=city),
+        pause=interval,
+    )
+    for fix in report.fixes:
+        where = f"{fix.slot.day_date} {fix.slot.city_name}"
+        if fix.resolved:
+            print(f"  ✅ {where} {fix.slot.title}")
+            print(f"      → {fix.matched_name}　{fix.lat_gcj02},{fix.lng_gcj02}")
+            if fix.address:
+                print(f"      {fix.address}")
+        else:
+            print(f"  —— {where} {fix.slot.title}")
+            print(f"      {fix.reason}")
+
+    print()
+    print(f"查到 {len(report.resolved)} 个，留空 {len(report.unresolved)} 个")
+    if report.unresolved:
+        print("留空的是**故意**的：对不上实体就不写坐标。通用菜名基本都会留空——")
+        print("搜索能搜到一家同名小店，但那多半不是行程里说的那一家。")
+
+    if not args.apply:
+        if report.resolved:
+            print()
+            print("还没有写库。加 --apply 把上面查到的坐标写进天项，再重新导出路书。")
+        return 0
+
+    changed = meal_coords.apply_fixes(report.fixes)
+    print()
+    print(f"已写入 {len(changed)} 个天项。重新跑 ls export 让路书里的路段说明补上。")
+    return 0
 
 
 def _register_export(sub) -> None:
