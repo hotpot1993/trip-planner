@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { BudgetPanel } from '@/components/BudgetPanel'
+import { BookingPanel } from '@/components/BookingPanel'
 import { RouteRail } from '@/components/RouteRail'
 import { WeatherPanel } from '@/components/WeatherPanel'
 import {
@@ -68,6 +69,10 @@ export function TripDetail({ tripId }: { tripId: string }) {
     <div className="space-y-8">
       <BackLink />
       <TripHeader trip={trip} onChanged={reload} />
+
+      {/* 预约排在行程前面：时点比行程本身更紧急。
+          用户打开这份行程时真正可能已经晚了的事，是某个景点的票几天前放过了。 */}
+      <BookingPanel tripId={trip.id} />
 
       <section>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">

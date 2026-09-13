@@ -92,10 +92,23 @@ class BookingRule:
     reviewer_note: str | None = None
 
     def __post_init__(self) -> None:
-        if self.booking_required and self.advance_days is None:
-            raise ValueError("需要预约的景点必须给出提前天数，否则无法算放票日")
         if self.advance_days is not None and self.advance_days < 0:
             raise ValueError("提前天数不能为负")
+
+    @property
+    def has_release_window(self) -> bool:
+        """算不算得出放票日。
+
+        **「需要预约」与「算得出放票日」是两件事。** 实测 17 个必须预约的
+        知名景点里，有 12 个的官方页面只说「须提前线上预约」而**从不公布**
+        放票天数与时刻（兵马俑流传的「提前 7 天 / 10 天 / 0 点 / 17:00」
+        四种说法互相矛盾，且都找不到官方出处）。
+
+        这种规则仍然是有用的：它告诉用户「这里必须预约、去哪儿约、电话是多少」，
+        而这正是最怕白跑的那件事。它只是不能承诺「还有 3 天放票」。
+        所以缺 `advance_days` **不是错误**，是口径未公开——界面上照实说。
+        """
+        return self.advance_days is not None
 
     @property
     def verify_due_at(self) -> date | None:
@@ -148,15 +161,33 @@ class BookingAlert:
     id_required_note: str | None = None
 
     @property
+    def has_fixed_time(self) -> bool:
+        """是不是「到点开抢」。
+
+        有明确放票时刻的（故宫 20:00、国博 17:00）是一场**抢票**，
+        提醒必须落在那个时刻上。没有时刻的（上博提前 14 日放号、莫高窟提前
+        30 天可约）只是**窗口打开**——那天起随时能约，把它写成某个具体时刻
+        等于凭空造了一个精度，用户会照着那个点去等。
+        """
+        return bool(self.release_time)
+
+    @property
     def headline(self) -> str:
-        """给用户看的一行结论。"""
+        """给用户看的一行结论。
+
+        算不出放票日时**不写「待补齐」**：那不是「我们忘了填」，
+        而是「官方没公布」。把责任说错会让用户以为是工具的疏漏，
+        从而在别处找一个不可靠的日期。
+        """
         if self.release_date is None:
-            return "需要预约，但放票规则待补齐"
+            return "必须提前线上预约——官方未公布放票口径，出行前以官方渠道为准"
         if self.urgency is Urgency.OVERDUE:
             return f"放票日已过 {abs(self.days_until_release or 0)} 天，立刻确认是否还有票"
         if self.urgency is Urgency.TODAY:
             when = f" {self.release_time}" if self.release_time else ""
             return f"今天{when} 放票"
+        if not self.has_fixed_time:
+            return f"{self.days_until_release} 天后可以开始预约"
         return f"{self.days_until_release} 天后放票"
 
 
@@ -264,7 +295,13 @@ def lint_rule(rule: BookingRule, *, today: date, poi_name: str | None = None) ->
 
     if rule.booking_required:
         if rule.advance_days is None:
-            add(Severity.ERROR, "no_advance_days", "需要预约却没写提前几天，算不出放票日")
+            # 只是提醒，不是错误：官方没公布放票口径的规则仍然有用——
+            # 它告诉用户「必须预约、去哪儿约」，那正是最怕白跑的事。
+            add(
+                Severity.WARN,
+                "no_advance_days",
+                "没写提前几天（官方未公布口径时不填），界面上不会承诺放票日",
+            )
         elif rule.advance_days > MAX_PLAUSIBLE_ADVANCE_DAYS:
             add(
                 Severity.ERROR,

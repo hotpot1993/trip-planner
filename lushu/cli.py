@@ -151,6 +151,12 @@ def _register_align(sub) -> None:
     audit = actions.add_parser("audit", help="体检：有没有结论挂到了子点上（违反 ADR-0009）")
     audit.set_defaults(_handler=_cmd_align_audit)
 
+    merge = actions.add_parser(
+        "merge-pois", help="把同一处地方的两个实体并成一个（ADR-0002 的补救）"
+    )
+    merge.add_argument("--apply", action="store_true", help="真的合并。不给就只报告")
+    merge.set_defaults(_handler=_cmd_align_merge_pois)
+
     align.set_defaults(_handler=lambda _args: _usage(align))
 
 
@@ -939,6 +945,49 @@ def _cmd_align_audit(_args: argparse.Namespace) -> int:
     print("做法：把这张待办退回 pending 再跑一次 ls align run，")
     print("旧结论该删的要先删掉（ls align show <poi_id> 能查出来）。")
     return 1
+
+
+def _cmd_align_merge_pois(args: argparse.Namespace) -> int:
+    """把同一处地方的两个实体并成一个。
+
+    ADR-0002 说高德是实体真源，一个地方只该有一行 `poi`。M1/M2 落库时用的是
+    引擎回填的 id，M3 有了自己的适配器之后又按名称搜了一遍，于是同一处地方
+    有了两行。不合并的话，预约规则与攻略结论都挂在新实体上，
+    而旧行程的天项指向旧实体——**规则与结论永远到不了那些行程**。
+    """
+    from lushu.services import poi_merge
+    from lushu.store import connect, transaction
+
+    if not args.apply:
+        groups = poi_merge.find_duplicates(connect())
+        if not groups:
+            print("没有同名多行的实体，ADR-0002 是干净的")
+            return 0
+        print(f"发现 {len(groups)} 处地方各有两行（或更多）：")
+        print()
+        for group in groups:
+            print(f"  {group.summary}")
+            for item in group.losers:
+                counts = poi_merge.reference_counts(connect(), item.poi_id)
+                detail = "、".join(f"{k} {v} 行" for k, v in counts.items()) or "没有引用"
+                print(f"        并掉的这行被指着：{detail}")
+            print()
+        print("这只是报告。真要合并加 --apply——合并不可逆，先看清楚要动什么。")
+        return 1
+
+    with transaction() as conn:
+        groups, report = poi_merge.merge_duplicates(conn=conn)
+
+    if not groups:
+        print("没有同名多行的实体，没什么可合并的")
+        return 0
+
+    print(f"并掉 {report.merged} 行旧实体（{len(groups)} 处地方）：")
+    for key, value in sorted(report.moved.items()):
+        print(f"  {key}：改了 {value} 行")
+    print()
+    print("指向旧实体的引用都已改到留下的那行上。")
+    return 0
 
 
 def _cmd_align_show(args: argparse.Namespace) -> int:

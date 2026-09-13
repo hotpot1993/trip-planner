@@ -1,0 +1,501 @@
+[
+  {
+    "name": "故宫博物院",
+    "city": "北京",
+    "booking_required": true,
+    "advance_days": 7,
+    "release_time": "20:00",
+    "releases_at_note": "不售当日票，门票（大门票和钟表馆、珍宝馆门票）及展览于参观前7日20:00开始预约，限参观当日使用有效。",
+    "channels": [
+      {
+        "name": "「故宫博物院」官方小程序",
+        "kind": "miniapp",
+        "url": "https://www.dpm.org.cn/subject_booking/index.html"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "中国内地观众仅限使用身份证预约；非中国内地观众用港澳居民来往内地通行证、台湾居民来往大陆通行证、港澳台居民居住证、外国人永久居留身份证或护照。同一证件每个参观日仅能预约一张门票，不可改签、不可变更参观人员。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.dpm.org.cn/subject_booking/index.html",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "是「参观前7日20:00放票」，不是零点；故宫未授权任何第三方代理门票，只走「故宫博物院」小程序。周一闭馆（法定节假日除外），年票观众也须至少提前一日登记。"
+  },
+  {
+    "name": "中国国家博物馆",
+    "city": "北京",
+    "booking_required": true,
+    "advance_days": 7,
+    "release_time": "17:00",
+    "releases_at_note": "观众可提前7日内在国家博物馆官网、国家博物馆官方预约小程序、微信小程序和微信公众号预约；预约放票时间为每日17:00，退票截止时间为参观当日15:00。",
+    "channels": [
+      {
+        "name": "中国国家博物馆官网",
+        "kind": "web",
+        "url": "https://www.chnmuseum.cn/"
+      },
+      {
+        "name": "国家博物馆官方预约小程序 / 微信公众号",
+        "kind": "miniapp",
+        "url": "https://www.chnmuseum.cn/gbgg/202507/t20250725_272247.shtml"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "须用有效身份证件完成预约账号实名认证；未满14周岁（含）未成年人须由成年人代为预约并同步核验入馆。每个账号每周最多预约1次、每次最多5人，至多添加10个常用联系人；同一证件号每月最多预约1次、每天仅可预约1次。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.chnmuseum.cn/gbgg/202507/t20250725_272247.shtml",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "免费但必须提前线上预约，放票时刻是每日17:00（不是零点）；周一闭馆（法定节假日除外）。预约后退票仍计入预约次数，证件号累计3次未履约将被限制预约30日。"
+  },
+  {
+    "name": "陕西历史博物馆",
+    "city": "西安",
+    "booking_required": true,
+    "advance_days": 5,
+    "release_time": "17:00",
+    "releases_at_note": "实行提前5天放票制度（例如1月14日放1月19日门票），本馆放票时间为17:00，秦汉馆放票时间为17:30。",
+    "channels": [
+      {
+        "name": "「陕西历史博物馆」微信公众号（门票预约菜单）",
+        "kind": "official_account",
+        "url": "https://www.sxhm.com/info/news/detail/17214.html"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "需先添加常用参观人信息（姓名+证件号）再预约；预约成功后凭预约时使用的有效证件原件、按预约时段核验入馆。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.sxhm.com/info/news/detail/17214.html",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "本馆与秦汉馆是两个馆区、门票不通用，预约时必须选对馆区。放票时刻是17:00（秦汉馆17:30），不是零点。"
+  },
+  {
+    "name": "湖南博物院",
+    "city": "长沙",
+    "booking_required": true,
+    "advance_days": 5,
+    "release_time": "20:00",
+    "releases_at_note": "散客及旅行社团队网络实名制预约周期，由原提前7天（不含当天）调整为提前5天（不含当天）；根据调整后的预约周期，2026年8月4日的门票于7月30日20:00开放预约。",
+    "channels": [
+      {
+        "name": "湖南省博物馆（湖南博物院）官方微信公众号",
+        "kind": "official_account",
+        "url": "https://web.hnmuseum.com/"
+      },
+      {
+        "name": "湖南省博物馆官方支付宝小程序",
+        "kind": "miniapp",
+        "url": "https://web.hnmuseum.com/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "网络实名制预约，预约成功后凭预约时使用的有效证件原件按预约时段核验入馆；单个预约订单最多可预约5张门票。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://web.hnmuseum.com/zh-hans/aboutus/%E3%80%90%E5%85%AC%E5%91%8A%E3%80%91%E6%B9%96%E5%8D%97%E7%9C%81%E5%8D%9A%E7%89%A9%E9%A6%86%E5%85%B3%E4%BA%8E%E8%B0%83%E6%95%B4%E7%A5%A8%E5%8A%A1%E9%A2%84%E7%BA%A6%E8%A7%84%E5%88%99%E7%9A%84%E5%85%AC%E5%91%8A",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "官方 2022 年由「湖南省博物馆」更名为「湖南博物院」，高德索引仍是旧名，故 amap_name 填旧名。2026年7月27日起刚从「提前7天」改为「提前5天」，网上大量旧攻略仍是提前7天，会算错放票日。放票时刻20:00；预约账号月度上限6次、周上限3次，退票和候补也计入次数。closed_days_weekdays 按常规周一闭馆填写，该闭馆日未在本条证据页中明确写出，出行前请复核。",
+    "amap_name": "湖南省博物馆"
+  },
+  {
+    "name": "湖北省博物馆",
+    "city": "武汉",
+    "booking_required": true,
+    "advance_days": 5,
+    "release_time": "17:18",
+    "releases_at_note": "继续实行实名预约参观机制（分时段），可通过官方微信公众号或官方网站预约免费参观名额（最早可提前5天预约）；新版门票预约系统每日放票时间由旧版24:00调整为17:18。",
+    "channels": [
+      {
+        "name": "湖北省博物馆官方微信公众号",
+        "kind": "official_account",
+        "url": "http://www.hbww.org.cn/"
+      },
+      {
+        "name": "湖北省博物馆官方网站",
+        "kind": "web",
+        "url": "http://www.hbww.org.cn/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "参观需预约，预约成功后须在预约日期、时段内携带本人有效身份证件入馆，入馆时配合身份证件核录。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "http://news.cnhubei.com/content/2026-09/04/content_20174556.html",
+    "source_kind": "authority",
+    "confidence": "medium",
+    "note": "放票时刻是17:18，这个时间非常反直觉（新版系统从原来的24:00改为17:18），务必不要按零点或17:00去抢；该时刻出自馆方2024年12月11日新版预约系统公告，此后未见调整公告。最早可提前5天预约（2026年9月湖北日报转述馆方最新安排）。自2026年9月5日起周六、周日有夜场，闭馆时间延至20:30，周一闭馆。"
+  },
+  {
+    "name": "苏州博物馆（本馆）",
+    "city": "苏州",
+    "booking_required": true,
+    "advance_days": 7,
+    "release_time": null,
+    "releases_at_note": "苏州博物馆本馆实行实名制全预约制度，观众可提前七天通过线上渠道进行参观预约（系统服务时间：每日8:00-23:00）。",
+    "channels": [
+      {
+        "name": "苏州博物馆官方微信公众号/小程序（预约二维码）",
+        "kind": "miniapp",
+        "url": "https://www.szmuseum.com/Other/ReservationTip"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "每张有效身份证件每天限定预约一次，单个账号每天最多实名预约10人，姓名与证件号须如实填写，信息不符不能入馆；未办身份证的未成年人用户口本上的身份证号预约。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.szmuseum.com/Other/ReservationTip",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "官方只写「提前七天、系统服务时间每日8:00-23:00」，未写明确的每日放票时刻，所以 release_time 留空（可能是有票即出而非整点放票）。注意只有本馆需要全预约，苏州博物馆西馆可直接到馆。周二至周日9:00-17:00，周一闭馆。",
+    "amap_name": "苏州博物馆(本馆)"
+  },
+  {
+    "name": "成都博物馆",
+    "city": "成都",
+    "booking_required": true,
+    "advance_days": 14,
+    "release_time": "19:00",
+    "releases_at_note": "将预约周期由原来的提前5天延长至提前14天，每日19:00开放新一天的门票预约。",
+    "channels": [
+      {
+        "name": "成都博物馆官方预约（官网/微信公众号）",
+        "kind": "web",
+        "url": "https://www.cdmuseum.com/"
+      },
+      {
+        "name": "境外观众邮箱预约（官网提供）",
+        "kind": "web",
+        "url": "https://www.cdmuseum.com/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "身份证、外国人永居证预约的观众刷证入馆；用护照、港澳通行证等证件预约的须在票务咨询窗口换票入馆；未成年儿童预约时系统自动生成二维码可刷码入馆。60岁以上老年人、残疾人、现（退）役军人、特展购票观众可凭相关证件免预约。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.cdmuseum.com/xinwen/202407/3705.html",
+    "source_kind": "official",
+    "confidence": "medium",
+    "note": "这条依据是2024年7月19日馆方公告（提前14天、每日19:00放票），此后未见官方公告推翻，但仍属较早信息，出行前建议在官方预约页复核。公告同时提到暑期取消周一闭馆，平日通常周一闭馆。"
+  },
+  {
+    "name": "莫高窟",
+    "city": "酒泉",
+    "booking_required": true,
+    "advance_days": 30,
+    "release_time": null,
+    "releases_at_note": "莫高窟参观预约网每日7:00-22:00开放预约，可预约30日以内莫高窟参观门票。",
+    "channels": [
+      {
+        "name": "莫高窟参观预约网（官网）",
+        "kind": "web",
+        "url": "https://www.mgk.org.cn/"
+      },
+      {
+        "name": "「莫高窟参观预约网」微信小程序/微信服务号",
+        "kind": "miniapp",
+        "url": "https://www.mgk.org.cn/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "实行实名预约和实名验票准入制度，购票和参观须携带个人有效身份证件，票、证、人相符方可参观；常规参观还需换纸质「莫高窟购票信息单」。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://wlj.jiuquan.gov.cn/wlj/xx01/202608/8bbf535477d143a9a3815e63960c1a79.shtml",
+    "source_kind": "authority",
+    "confidence": "high",
+    "note": "敦煌是由酒泉代管的县级市，高德的城市解析里没有「敦煌」，故 city 填地区级的「酒泉」（它同时是搜索范围的限定，不是对景点位置的claim）。可预约30日以内的票，且预约系统只在每日7:00-22:00开放（不是全天候），没有统一的整点放票时刻。常规票单日限额仅6000张，售罄后旺季才启动应急票（单日12000张，只看4个洞窟）。必须先到莫高窟数字展示中心，窟区不设售票处，直接开车去窟区等于白跑。",
+    "amap_name": "莫高窟景区"
+  },
+  {
+    "name": "布达拉宫",
+    "city": "拉萨",
+    "booking_required": true,
+    "advance_days": 10,
+    "release_time": null,
+    "releases_at_note": "前来参观布达拉宫的游客，请提前十天以内登录「布达拉宫票务预订系统」或布达拉宫官方微信公众号预约参观。",
+    "channels": [
+      {
+        "name": "「布达拉宫官方票务预约系统」微信小程序",
+        "kind": "miniapp",
+        "url": "https://wlt.xizang.gov.cn/xccx/lytg/202507/t20250727_492008.html"
+      },
+      {
+        "name": "「布达拉宫官方平台」微信公众号",
+        "kind": "official_account",
+        "url": "https://wlt.xizang.gov.cn/xccx/lytg/202507/t20250727_492008.html"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "门票购买务必通过本人手机微信端购票，同一个微信号订购一张成年票同时可以绑定两名老年人或两名未成年人；参观当天需提前1小时到达布达拉宫正门安检口。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://wlt.xizang.gov.cn/xccx/lytg/202507/t20250727_492008.html",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "官方原文是「提前十天以内」预约（即最多提前10天），未写每日放票时刻，所以 release_time 留空。购票成功后从参观当日起7日内无法二次订购门票；「运用智能技术困难」的60岁以上老人及特殊人群需提前一天到「布达拉宫门票预订处」现场预约（上午9:30开始，票额有限发完为止）。布宫未授权任何第三方代售。"
+  },
+  {
+    "name": "九寨沟风景名胜区",
+    "city": "阿坝",
+    "booking_required": true,
+    "advance_days": null,
+    "release_time": null,
+    "releases_at_note": "景区实行实名制预约购票，未预约将无法入园，请勿盲目前往。建议提前3-7天预约。",
+    "channels": [
+      {
+        "name": "微信公众号「九寨沟」（游览必看-门票预订）",
+        "kind": "official_account",
+        "url": "https://www.jiuzhai.com/"
+      },
+      {
+        "name": "「阿坝旅游网」微信小程序",
+        "kind": "miniapp",
+        "url": "https://www.jiuzhai.com/"
+      },
+      {
+        "name": "景区票务咨询电话 0837-7769999",
+        "kind": "phone",
+        "url": "https://www.jiuzhai.com/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "景区实行实名制预约购票，按预约时段入园；未预约无法入园。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://www.jiuzhai.com/news/notice/10929-2026-02-12-11-07-31",
+    "source_kind": "official",
+    "confidence": "medium",
+    "note": "官方明确「非预约，不出行」「未预约将无法入园」，但只给「建议提前3-7天预约」的建议区间，未公布固定放票天数与放票时刻，故 advance_days 与 release_time 均留空。每日限流量随季节变化（该通告为春节假期限流2.3万人次/日），限流数字不要当全年通用值。"
+  },
+  {
+    "name": "泰山",
+    "city": "泰安",
+    "booking_required": true,
+    "advance_days": 7,
+    "release_time": "10:00",
+    "releases_at_note": "泰山门票线上销售系统放票时间调整为每日上午10:00，请及早登录「泰山景区」微信公众号预约购买七日内泰山门票。",
+    "channels": [
+      {
+        "name": "「泰山景区」微信公众号",
+        "kind": "official_account",
+        "url": "https://taian.dzwww.com/2013sy/syjdt/wangyoupai/202406/t20240620_14360197.html"
+      },
+      {
+        "name": "「泰山旅游游客服务平台」微信小程序",
+        "kind": "miniapp",
+        "url": "https://taian.dzwww.com/2013sy/syjdt/wangyoupai/202406/t20240620_14360197.html"
+      },
+      {
+        "name": "泰山景区24小时咨询服务热线 0538-96008888",
+        "kind": "phone",
+        "url": "https://taian.dzwww.com/2013sy/syjdt/wangyoupai/202406/t20240620_14360197.html"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "实行实名制预约购票，可提前7天预约；购票后无需线下换票，直接刷脸或刷身份证入园（境外游客需携带护照）。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://taian.dzwww.com/2013sy/syjdt/wangyoupai/202406/t20240620_14360197.html",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "放票时刻是每日上午10:00（2024年6月20日起由原0点调整），很多老攻略还写「0点抢票」，会直接错过。红门、天外村、桃花峪三个进山口名额互相独立、不能串门，预约时必须选对入口和时段。门票首次检票后三日内有效，二次入园须重新预约。"
+  },
+  {
+    "name": "黄山风景区",
+    "city": "黄山",
+    "booking_required": true,
+    "advance_days": null,
+    "release_time": null,
+    "releases_at_note": "游客（含黄山市旅游一卡通用户）须通过黄山旅游官方平台提前实名预约，建议您至少提前三天完成预约，并确保预约身份信息与入园人身份信息一致。",
+    "channels": [
+      {
+        "name": "「黄山旅游官方平台」微信小程序",
+        "kind": "miniapp",
+        "url": "https://m.gmw.cn/2026-04/27/content_1304435171.htm"
+      },
+      {
+        "name": "黄山风景区咨询服务热线 0559-2590999",
+        "kind": "phone",
+        "url": "https://m.gmw.cn/2026-04/27/content_1304435171.htm"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "实行强实名分时分方向预约、核验入园制度，预约身份信息须与入园人一致；未预约成功的游客无法入园。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://m.gmw.cn/2026-04/27/content_1304435171.htm",
+    "source_kind": "authority",
+    "confidence": "medium",
+    "note": "官方只给「建议至少提前三天完成预约」，未公布统一的放票天数与放票时刻，故两个字段留空，不要自行填 3 当作放票日。景区是「分时分方向」预约，进山方向选错无法检票。天都峰另需单独预约，「无预约、不登峰」。该来源是2026年「五一」假期公告（光明网转载），日常规则条款与此一致但出行前建议再核对当季公告。"
+  },
+  {
+    "name": "三星堆博物馆",
+    "city": "德阳",
+    "booking_required": true,
+    "advance_days": 5,
+    "release_time": "20:00",
+    "releases_at_note": "三星堆博物馆实行实名预约购票制度，坚持「预约、限流、错峰」常态化管理，观众须提前在官方网站、微信公众号预约购票；线上票务预约系统放票时间为每日20:00，可提前5天预约购票。",
+    "channels": [
+      {
+        "name": "三星堆博物馆官方网站",
+        "kind": "web",
+        "url": "https://www.sxd.cn/"
+      },
+      {
+        "name": "微信公众号「三星堆博物馆」（前往参观-门票预约）",
+        "kind": "official_account",
+        "url": "https://www.sxd.cn/"
+      },
+      {
+        "name": "票务咨询电话 0838-5533333",
+        "kind": "phone",
+        "url": "https://www.sxd.cn/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "实行实名预约购票，按预约时段入馆参观；未预约无法入馆。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://www.guanghan.gov.cn/gk/xxgk/jbxxgk/hygq/1670044.htm",
+    "source_kind": "authority",
+    "confidence": "medium",
+    "note": "广汉是由德阳代管的县级市，高德的城市解析里没有「广汉」，故 city 填地区级的「德阳」。放票时刻是每日20:00、可提前5天（出自广汉市政府网站「回应关切」栏目刊登的三星堆博物馆官方答复）。另据2025年11月四川省网上群众工作平台官方答复，黄金周、小长假期间的日间票与延时票会「提前5天一次性放出」，与日常口径一致。暑期（7、8月）延时票于当日17:00准时上线、可当天购买。闭馆日未见官方明确公告，按无固定闭馆日填写，出行前请复核（春节除夕曾闭馆一天）。"
+  },
+  {
+    "name": "秦始皇帝陵博物院",
+    "city": "西安",
+    "booking_required": true,
+    "advance_days": null,
+    "release_time": null,
+    "releases_at_note": "官方未公布平日的提前天数与每日固定放票时刻；官方节假日公告只写「2026年4月24日00:00开放预约五一假期门票」（整批开放）。官网《购票须知》只写实行「限量、预约、错峰」限流措施和实名制售检票制度，并「根据时段对门票进行分配，并实行分时检票」。",
+    "channels": [
+      {
+        "name": "秦始皇帝陵博物院官网（官方票务网站）",
+        "kind": "web",
+        "url": "https://www.bmy.com.cn/"
+      },
+      {
+        "name": "官方微信公众号「秦始皇帝陵博物院」",
+        "kind": "official_account",
+        "url": "https://www.bmy.com.cn/guide.html"
+      },
+      {
+        "name": "官方微信公众号「兵马俑票务在线」",
+        "kind": "official_account",
+        "url": "https://www.bmy.com.cn/guide.html"
+      },
+      {
+        "name": "票务咨询电话 029-81399127",
+        "kind": "phone",
+        "url": "https://mp.weixin.qq.com/s/GM1hn64dG_CedLwgEKWHlw"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "实名制售检票，须人、票、证三者一致；中国籍16周岁至65周岁游客需预约购票，符合免票政策的游客需预约但不购票；一张有效身份证只能订购一张门票，凭订票的有效身份证件直接入园、无需取票。",
+    "closed_days_weekdays": [],
+    "evidence_url": "https://www.bmy.com.cn/guide.html",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "全年开放、没有闭馆日，但中国籍16-65周岁游客必须提前线上预约购票，官方明确「务必完成网上购票后再前来参观」；现场人工窗口只是给不太会用智能手机的老年人提供便利，排长队也可能没票。官网《购票须知》与官方公众号都未写明「提前几天」「几点放票」，网上流传的「提前7天」「提前10天」「每日0点」「每日17:00」互相矛盾，行程里不要把抢票时点写成硬规则，建议出行前致电029-81399127确认。每日最大承载量6.5万人（节假日会提高，如2026年五一为7.5万），达到上限即停止售票。官方声明从未授权任何第三方平台售票，携程/美团上的多为「门票+讲解」打包或代订，不是官方票源。一张有效身份证只能订一张票。"
+  },
+  {
+    "name": "南京博物院",
+    "city": "南京",
+    "booking_required": true,
+    "advance_days": null,
+    "release_time": null,
+    "releases_at_note": "我院继续实行全员实名分段预约参观机制，原有预约政策和放票规则不变。请提前通过南京博物院官方微信小程序进行预约……特别提醒，当日不再放票。",
+    "channels": [
+      {
+        "name": "南京博物院官方微信小程序",
+        "kind": "miniapp",
+        "url": "https://www.njmuseum.com/"
+      }
+    ],
+    "requires_real_name": true,
+    "id_required_note": "全员实名分段预约；参观当日须按照预约时段，凭预约证件原件（本人二代身份证、江苏省第三代社保卡或港澳台居民居住证）核验入馆。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.njmuseum.com/api/news/info?id=381188",
+    "source_kind": "official",
+    "confidence": "medium",
+    "note": "官方明确「全员实名分段预约」「当日不再放票」，所以必须提前约；但该公告未给出可提前几天和每日放票时刻（只说「原有预约政策和放票规则不变」），故 advance_days 与 release_time 都留空，出行前请在官方小程序或官网公告里复核具体放票时点。南京博物院未授权任何第三方机构（平台）或个人代理门票业务。2026年暑期周一正常闭馆；高考毕业生/大学新生的免预约属暑期阶段性政策，不要当常态。"
+  },
+  {
+    "name": "上海博物馆东馆",
+    "city": "上海",
+    "booking_required": false,
+    "advance_days": null,
+    "release_time": null,
+    "releases_at_note": "上海博物馆东馆自2024年9月15日起试行散客免预约凭证入馆参观，观众可持有效身份证件从B1层东门通过安检后入馆。",
+    "channels": [
+      {
+        "name": "上海博物馆官网（2026年9月1日起启用新域名）",
+        "kind": "web",
+        "url": "https://www.shanghaimuseum.cn/"
+      },
+      {
+        "name": "「上海博物馆」微信公众号（特展/团队预约）",
+        "kind": "official_account",
+        "url": "https://www.shanghaimuseum.cn/"
+      },
+      {
+        "name": "团队预约电话 021-20729999转134分机",
+        "kind": "phone",
+        "url": "https://www.shanghaimuseum.net/mu/frontend/pg/article/id/I00004683"
+      }
+    ],
+    "requires_real_name": false,
+    "id_required_note": "散客持有效身份证件从B1层东门通过安检后入馆；团体20人以上（含20人）须提前7-14天电话预约（每日限额，约完即止）。",
+    "closed_days_weekdays": [
+      1
+    ],
+    "evidence_url": "https://www.shanghaimuseum.net/mu/frontend/pg/article/id/I00004683",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "常规基本陈列免预约，但要留意两点：热门特展仍需单独预约（官方开放信息页写明「基本陈列免预约」），团体20人以上必须提前7-14天电话预约。开放时间10:00-18:00（17:00停止入场），除国定节假日外周二闭馆。官网域名2026年9月1日起变更为 www.shanghaimuseum.cn，旧域名 www.shanghaimuseum.net 将于2027年1月1日停用。",
+    "amap_name": "上海博物馆(东馆)"
+  },
+  {
+    "name": "上海博物馆人民广场馆",
+    "city": "上海",
+    "booking_required": true,
+    "advance_days": 14,
+    "release_time": null,
+    "releases_at_note": "自2025年9月1日起试行散客免预约凭证入馆参观；国定假日、寒暑假以及举办热门特展等参观高峰期间仍需预约入馆，个人参观可提前14日（含当日）通过上海博物馆微信公众号预约。",
+    "channels": [
+      {
+        "name": "「上海博物馆」微信公众号",
+        "kind": "official_account",
+        "url": "https://www.shanghaimuseum.net/mu/frontend/pg/article/id/I00004796"
+      },
+      {
+        "name": "上海博物馆官网（境外观众预约）",
+        "kind": "web",
+        "url": "https://www.shanghaimuseum.cn/"
+      },
+      {
+        "name": "团队预约电话 021-63724550",
+        "kind": "phone",
+        "url": "https://www.shanghaimuseum.net/mu/frontend/pg/article/id/I00004796"
+      }
+    ],
+    "requires_real_name": false,
+    "id_required_note": "散客持有效身份证件从南门通过安检后入馆；团体20人以上（含20人）须提前7天电话预约（每日限额，约完即止）。",
+    "closed_days_weekdays": [
+      0
+    ],
+    "evidence_url": "https://www.shanghaimuseum.net/mu/frontend/pg/article/id/I00004796",
+    "source_kind": "official",
+    "confidence": "high",
+    "note": "**当前需预约**：该馆日常免预约，但 2026-07-09 至 2027-11-14 举办的「世界树之巅：美洲古代文明大展」明确要求「预约购票后前往人民广场馆参观」，官网首页挂着这句话。提前 14 日（含当日）放号，未公布统一放票时刻，所以 release_time 留空——界面上按「可以开始预约」处理，不承诺具体时刻。特展结束后这条规则应改回 booking_required=false，复验到期会提醒。开放时间 9:00-17:00（16:00 停止入场），除国定节假日外周一闭馆。",
+    "amap_name": "上海博物馆(人民广场馆)"
+  }
+]

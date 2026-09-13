@@ -96,7 +96,8 @@ def _stamp(moment: datetime) -> str:
 
 
 def release_moment(alert: BookingAlert) -> datetime:
-    """放票的具体时刻。规则没写时刻时按 00:00 算。
+    """放票日那天的起点。规则没写时刻时就是 00:00，而调用方会用全天事件
+    表达它（`build_event`），不会把这个 00:00 当成真实时刻。
 
     调用方只对算得出放票日的条目调它（`build_calendar` 已经把算不出的滤掉了）。
     """
@@ -109,6 +110,9 @@ def release_moment(alert: BookingAlert) -> datetime:
 def _summary(alert: BookingAlert) -> str:
     if alert.urgency is Urgency.OVERDUE:
         return f"确认余票｜{alert.poi_name}"
+    if not alert.has_fixed_time:
+        # 没有固定时刻的只是「窗口打开了」，说「抢票」会让人以为要掐点
+        return f"可以预约了｜{alert.poi_name}"
     return f"抢票｜{alert.poi_name}"
 
 
@@ -118,7 +122,8 @@ def _description(alert: BookingAlert, *, trip_name: str | None) -> str:
         lines.append(f"行程：{trip_name}")
     lines.append(f"计划游览：{alert.visit_date.isoformat()}")
     if alert.days_until_release is not None and alert.days_until_release >= 0:
-        lines.append(f"距今 {alert.days_until_release} 天放票")
+        verb = "放票" if alert.has_fixed_time else "可以开始预约"
+        lines.append(f"距今 {alert.days_until_release} 天{verb}")
     lines.append(alert.headline)
 
     if alert.channels:
@@ -146,7 +151,16 @@ def build_event(
     now: datetime,
     sequence: int = 0,
 ) -> list[str]:
-    """一个预约事件。`alert` 必须算得出放票日。"""
+    """一个预约事件。`alert` 必须算得出放票日。
+
+    两种形状，取决于规则有没有给出**具体时刻**：
+
+    - 有时刻（故宫 20:00）：`DTSTART` 是那个时刻，带一条提前十分钟的提醒。
+      这是一场要掐点的抢票。
+    - 没时刻（上博提前 14 日放号）：**全天事件**，也不带提醒。
+      写成 00:00 的话等于凭空造了一个精度，用户会照着零点去等——
+      而他等的那一刻官方从没那么说过。
+    """
     start = release_moment(alert)
     overdue = alert.urgency is Urgency.OVERDUE
 
@@ -154,19 +168,31 @@ def build_event(
         "BEGIN:VEVENT",
         f"UID:{alert.poi_id}-{alert.visit_date.isoformat()}@{DOMAIN}",
         f"DTSTAMP:{_stamp(now)}",
-        f"DTSTART;TZID={TZID}:{_stamp(start)}",
-        f"DTEND;TZID={TZID}:{_stamp(start + timedelta(minutes=EVENT_MINUTES))}",
-        f"SUMMARY:{escape(_summary(alert))}",
-        f"DESCRIPTION:{escape(_description(alert, trip_name=trip_name))}",
-        "TRANSP:TRANSPARENT",
-        f"SEQUENCE:{sequence}",
     ]
+
+    if alert.has_fixed_time:
+        lines.append(f"DTSTART;TZID={TZID}:{_stamp(start)}")
+        lines.append(f"DTEND;TZID={TZID}:{_stamp(start + timedelta(minutes=EVENT_MINUTES))}")
+    else:
+        # 全天事件：DTEND 是**次日**，iCalendar 的 DTEND 是排他的
+        lines.append(f"DTSTART;VALUE=DATE:{start.strftime('%Y%m%d')}")
+        lines.append(f"DTEND;VALUE=DATE:{(start + timedelta(days=1)).strftime('%Y%m%d')}")
+
+    lines.extend(
+        [
+            f"SUMMARY:{escape(_summary(alert))}",
+            f"DESCRIPTION:{escape(_description(alert, trip_name=trip_name))}",
+            "TRANSP:TRANSPARENT",
+            f"SEQUENCE:{sequence}",
+        ]
+    )
     if alert.city_name:
         lines.append(f"LOCATION:{escape(alert.city_name)}")
 
-    # 已经过了放票日的条目不再设提醒：一个过去的提醒弹不出来，
-    # 只会让人以为「日历没同步」
-    if not overdue:
+    # 提醒只在两种情况下有意义：这是一个要掐点的时刻，而且它还没过去。
+    # 已经过了放票日的条目不设提醒：过去的提醒弹不出来，
+    # 只会让人以为「日历没同步」。
+    if alert.has_fixed_time and not overdue:
         lines.extend(
             [
                 "BEGIN:VALARM",

@@ -298,6 +298,47 @@ export const fetchTripWeather = (tripId: string): Promise<TripWeatherOut> =>
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)
 
+// ─── 预约 ────────────────────────────────────────────────────
+
+export interface BookingChannelOut {
+  name: string
+  kind: string
+  url: string | null
+}
+
+export type Urgency = 'overdue' | 'today' | 'soon' | 'later'
+
+export interface BookingAlertOut {
+  poi_id: string
+  poi_name: string
+  city_name: string | null
+  visit_date: string
+  release_date: string | null
+  days_until_release: number | null
+  urgency: Urgency
+  /** 给用户看的一行结论，由领域层算好——界面不自己拼文案。 */
+  headline: string
+  release_time: string | null
+  channels: BookingChannelOut[]
+  requires_real_name: boolean | null
+  id_required_note: string | null
+}
+
+export interface TripBookingOut {
+  trip_id: string
+  today: string
+  alerts: BookingAlertOut[]
+  /** 有规则但规则还是草案的景点。清单里没有 ≠ 不用预约。 */
+  pending_review: string[]
+}
+
+export const fetchTripBooking = (tripId: string): Promise<TripBookingOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/booking`)
+
+/** 预约日历的下载地址。日历是唯一的推送通道，所以直接给链接而不走 fetch。 */
+export const bookingCalendarUrl = (tripId: string): string =>
+  `/api/trips/${encodeURIComponent(tripId)}/booking.ics`
+
 // ─── 数据工作台 ──────────────────────────────────────────────
 
 export type Polarity = 'avoid' | 'highlight'

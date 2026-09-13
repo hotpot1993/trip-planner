@@ -171,9 +171,38 @@ def test_visits_not_in_the_rules_are_skipped() -> None:
 # ─── 构造校验 ────────────────────────────────────────────────
 
 
-def test_booking_required_without_advance_days_is_rejected() -> None:
-    with pytest.raises(ValueError, match="提前天数"):
-        BookingRule(poi_id="p1", booking_required=True, advance_days=None)
+def test_booking_required_without_advance_days_is_allowed() -> None:
+    """「需要预约」与「算得出放票日」是两件事。
+
+    实测 17 个必须预约的知名景点里有 12 个的官方页面只说「须提前线上预约」
+    而从不公布放票天数与时刻（兵马俑流传的四种说法互相矛盾且都无官方出处）。
+    这种规则仍然有用：它告诉用户「这里必须预约、去哪儿约」，
+    而那正是最怕白跑的一件事。
+    """
+    rule = BookingRule(poi_id="p1", booking_required=True, advance_days=None)
+    assert rule.has_release_window is False
+    assert rule.release_date_for(date(2026, 10, 1)) is None
+
+
+def test_incomplete_rule_still_says_what_to_do() -> None:
+    from lushu.domain.booking import Channel, ChannelKind, PlannedVisit, build_alert_list
+
+    rule = BookingRule(
+        poi_id="p1",
+        booking_required=True,
+        status=RuleStatus.REVIEWED,
+        advance_days=None,
+        channels=(Channel("官方公众号", ChannelKind.OFFICIAL_ACCOUNT),),
+        reviewed_at=TODAY,
+    )
+    alerts = build_alert_list(
+        [rule], [PlannedVisit(poi_id="p1", poi_name="某博物馆", visit_date=date(2026, 10, 1))], TODAY
+    )
+
+    assert len(alerts) == 1
+    # 不写「待补齐」——那不是我们忘了填，是官方没公布
+    assert "官方未公布" in alerts[0].headline
+    assert alerts[0].channels
 
 
 def test_negative_advance_days_is_rejected() -> None:

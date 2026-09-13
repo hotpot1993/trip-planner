@@ -147,9 +147,25 @@ class TestBuildCalendar:
         assert skipped == ["布达拉宫"]
         assert "布达拉宫" not in text
 
-    def test_release_without_time_defaults_to_midnight(self) -> None:
+    def test_release_without_time_becomes_an_all_day_event(self) -> None:
+        """没有具体时刻时是「那天起可以约了」，不是「零点开抢」。
+
+        写成 00:00 等于凭空造了一个精度——用户会照着零点去等，
+        而官方从没那么说过。
+        """
         text, _ = ics.build_calendar([_alert(release_time=None)])
-        assert "DTSTART;TZID=Asia/Shanghai:20260924T000000" in text
+        assert "DTSTART;VALUE=DATE:20260924" in text
+        assert "DTEND;VALUE=DATE:20260925" in text
+        assert "T000000" not in text
+
+    def test_all_day_event_has_no_timed_alarm(self) -> None:
+        text, _ = ics.build_calendar([_alert(release_time=None)])
+        assert "BEGIN:VALARM" not in text
+
+    def test_all_day_event_is_not_called_a_ticket_grab(self) -> None:
+        text, _ = ics.build_calendar([_alert(release_time=None)])
+        assert "可以预约了" in text
+        assert "抢票" not in text
 
     def test_description_lists_channels_and_visit_date(self) -> None:
         text, _ = ics.build_calendar([_alert()], trip_name="北京三日")

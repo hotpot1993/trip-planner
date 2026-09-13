@@ -57,9 +57,17 @@ class SeedError(ValueError):
 class SeedEntry:
     """种子文件里的一条。**规则内容 + 它挂到哪个景点**。"""
 
-    name: str  # 景点名，用于实体对齐
+    name: str  # 官方名，给人看
     city: str  # 城市名，高德搜索时限定范围
     booking_required: bool
+    # 高德那边的叫法。**官方名与高德名经常不是一回事**，实测：
+    #   湖南博物院 → 湖南省博物馆（2022 年改名，高德索引还是旧名）
+    #   上海博物馆人民广场馆 → 上海博物馆(人民广场馆)（半角括号）
+    #   苏州博物馆（本馆） → 苏州博物馆(本馆)
+    # 名称对不上时对齐只能靠字符重合度，而那道门槛是故意设高的
+    # （宁可让人来判，也不自动接受一个「看起来挺像」的候选）。
+    # 不填就用 name——对得上的那些不需要这一项。
+    amap_name: str | None = None
     advance_days: int | None = None
     release_time: str | None = None
     channels: tuple[Channel, ...] = ()
@@ -71,6 +79,11 @@ class SeedEntry:
     confidence: str | None = None  # high | medium | low
     releases_at_note: str | None = None
     note: str | None = None
+
+    @property
+    def search_name(self) -> str:
+        """拿去搜高德的那个名字。"""
+        return self.amap_name or self.name
 
     def as_rule(self, poi_id: str) -> BookingRuleModel:
         """还没入库的规则：一律从草案状态起步，复核是人的动作。"""
@@ -179,6 +192,7 @@ def _entry(raw: object, index: int) -> SeedEntry:
     return SeedEntry(
         name=name,
         city=city,
+        amap_name=text("amap_name"),
         booking_required=booking_required,
         advance_days=advance,
         release_time=text("release_time"),
@@ -231,33 +245,61 @@ def resolve_poi(
     search,
     fetch,
     conn: sqlite3.Connection,
-) -> tuple[CandidatePoi | None, str, str | None]:
-    """把种子里的景点名对到高德实体上。
+    city_adcode: str | None,
+) -> tuple[CandidatePoi | None, str]:
+    """把种子里的景点名对到高德实体上，返回（实体，说明）。
 
-    返回（实体，说明，城市的库内 adcode）。复用 M3 的对齐
-    （`complete_lineage` + `align`）。**城市门禁这一关在这里是冗余的**：
-    搜索本身已经按城市名限定了范围，而库里未必有这座城市——所以城市线索取
-    候选自己的 adcode 归档结果，只用来让门禁不误伤。这一点值得写下来，
-    免得日后有人以为这里的对齐与 M3 的完全等价。
+    复用 M3 的对齐（`complete_lineage` + `align`）。城市线索由调用方给：
+    它必须是**库里已有的**城市 adcode，否则 `align` 的城市门禁会一律拒绝
+    （`CandidatePoi.in_city` 对没有 adcode 的候选返回 False）。
+    实测 17 条种子里有 11 条卡在这一点上——种子覆盖的城市大多还没进过库。
     """
     from lushu.adapters.poi_lineage import complete_lineage
 
-    found = search(entry.name, entry.city)
+    found = search(entry.search_name, entry.city)
     if not found.candidates:
-        return None, f"高德没搜到「{entry.name}」", None
+        return None, f"高德没搜到「{entry.search_name}」"
 
     roots = complete_lineage(found.candidates, fetch_ancestor=fetch)
-    top = found.candidates[0]
-    city_adcode = ks.resolve_city_adcode(top.adcode, conn=conn)
-
     result = align(
-        Mention(name=entry.name, city_name=entry.city, city_adcode=city_adcode),
+        Mention(name=entry.search_name, city_name=entry.city, city_adcode=city_adcode),
         found.candidates,
         lineage=roots,
     )
     if result.outcome is not AlignOutcome.ALIGNED or result.resolved is None:
-        return None, f"对不上实体：{result.reason or result.outcome.value}", city_adcode
-    return result.resolved, result.reason or "名字命中", city_adcode
+        return None, f"对不上实体：{result.reason or result.outcome.value}"
+    return result.resolved, result.reason or "名字命中"
+
+
+def ensure_city(*, name: str, lookup, conn: sqlite3.Connection) -> str | None:
+    """把城市名落进 `city` 表，返回它的 adcode。
+
+    已经在库里就直接用——库里那份可能是用户在行程里自己叫的名字，
+    不该被种子的写法覆盖。不在库里就走高德解析（城市与 POI 一样以高德为准，
+    ADR-0002），用的是行程创建时的同一个入口。
+    """
+    row = conn.execute("SELECT adcode FROM city WHERE name = ? LIMIT 1", (name,)).fetchone()
+    if row is not None:
+        return row["adcode"]
+
+    match = lookup(name)
+    if match is None or not getattr(match, "adcode", None):
+        return None
+
+    from lushu.services.trip_store import CityRef, upsert_cities
+
+    upsert_cities(
+        [
+            CityRef(
+                adcode=match.adcode,
+                name=getattr(match, "name", None) or name,
+                lat_gcj02=getattr(match, "lat_gcj02", None),
+                lng_gcj02=getattr(match, "lng_gcj02", None),
+            )
+        ],
+        conn=conn,
+    )
+    return match.adcode
 
 
 def seed_rules(
@@ -267,6 +309,7 @@ def seed_rules(
     conn: sqlite3.Connection | None = None,
     search=None,
     fetch=None,
+    resolve_city=None,
     today: date | None = None,
     only: list[str] | None = None,
 ) -> SeedReport:
@@ -276,6 +319,7 @@ def seed_rules(
     「某人查到的材料」，签字画押是 `review_rule` 那一步的事。
     """
     from lushu.adapters.poi import fetch_poi, search_pois
+    from lushu.engine import resolve_city as engine_resolve_city
 
     items = entries if entries is not None else load_seed(path)
     if only:
@@ -288,12 +332,29 @@ def seed_rules(
     today = today or date.today()
     searcher = search or (lambda keywords, city: search_pois(keywords, city=city))
     fetcher = fetch or (lambda poi_id: fetch_poi(poi_id))
+    city_lookup = resolve_city or engine_resolve_city
 
     try:
         report.findings = lint_seed(items, today=today)
+        # 城市解析每个名字只做一次：17 条种子散在 12 座城市里，
+        # 每条都问一次高德是白花钱
+        cities: dict[str, str] = {}
         for entry in items:
-            poi, why, city_adcode = resolve_poi(
-                entry, search=searcher, fetch=fetcher, conn=active
+            if entry.city not in cities:
+                cities[entry.city] = (
+                    ensure_city(name=entry.city, lookup=city_lookup, conn=active) or ""
+                )
+            city_adcode = cities[entry.city]
+            if not city_adcode:
+                report.failed.append((entry.name, f"城市「{entry.city}」在高德查不到"))
+                continue
+
+            poi, why = resolve_poi(
+                entry,
+                search=searcher,
+                fetch=fetcher,
+                conn=active,
+                city_adcode=city_adcode,
             )
             if poi is None:
                 report.failed.append((entry.name, why))

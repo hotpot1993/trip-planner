@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -158,3 +159,74 @@ class CandidatePoi:
             # 放过它就等于承认「袁家村在西安」这类跨城错误。
             return False
         return mine[:4] == city_adcode.strip()[:4]
+
+
+# ─── 同一处地方的两个实体 ────────────────────────────────────────
+#
+# ADR-0002 说高德是本项目实体真源，一个地方只有一个 POI id。但 M1/M2 落库时
+# 用的是引擎从规划结果里回填的 id，M3 有了自己的适配器之后又按高德搜了一遍，
+# 于是同一个地方在库里有了两行——实测真实库里有五处（西安城墙、兵马俑、
+# 陕历博、南京博物院、夫子庙）。
+#
+# 这不是洁癖问题：预约规则挂在新实体上，而旧行程的天项指向旧实体，
+# 于是**规则永远匹配不到那些行程**；M5 的候选池也一样会落空。
+# 所以需要能认出「这两行是同一个地方」，并决定留哪一个。
+
+
+@dataclass(frozen=True)
+class PoiIdentity:
+    """`poi` 表里的一行，只取判断「谁是实体真源」用得着的字段。"""
+
+    poi_id: str
+    name: str
+    typecode: str | None = None
+    type_name: str | None = None
+    adcode: str | None = None
+    address: str | None = None
+    parent_id: str | None = None
+    rating: float | None = None
+    open_time: str | None = None
+    photo_url: str | None = None
+    raw_json: str | None = None
+    fetched_at: str | None = None
+    references: int = 0  # 有多少行指着它（天项、结论、规则……）
+
+    @property
+    def looks_like_amap(self) -> bool:
+        """这一行的 id 像不像高德给的。
+
+        高德的 POI id 以 `B` 开头（`B000A8UIN8`）。引擎早期回填的是 `X` 开头的
+        自造 id（`X000A8UIN2`）——那正是需要被合并掉的那种。
+        """
+        return self.poi_id.startswith("B")
+
+    @property
+    def has_amap_detail(self) -> bool:
+        """有没有高德那边的细节。`typecode` 是自有适配器写进去的（M3），
+        它非空说明这一行是**真的查过高德**，而不只是引擎回填的一个名字。"""
+        return bool((self.typecode or "").strip())
+
+
+def pick_survivor(rows: Sequence[PoiIdentity]) -> PoiIdentity | None:
+    """同一处地方的两行里，留哪一个。
+
+    判据按可靠性降序，先满足的先赢：
+
+    1. **有高德细节的**（`typecode` 非空）。它证明这一行是真查过高德的，
+       而不是引擎从规划结果里回填的一个名字。
+    2. **id 像高德的**（`B` 开头）。ADR-0002 要求实体主键是高德 id。
+    3. **被引用得多的**。合并要改引用，改得少的那次风险小。
+    4. id 字典序，只为让结果稳定可复现——同样的输入每次必须选出同一个赢家，
+       否则合并「跑两次结果不一样」这种事根本没法查。
+    """
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: (
+            not row.has_amap_detail,
+            not row.looks_like_amap,
+            -row.references,
+            row.poi_id,
+        ),
+    )[0]
