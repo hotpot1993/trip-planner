@@ -137,6 +137,17 @@ class TestRuntimeSettingsThatFailSilently:
         assert 'SEED_DIR="/app/lushu/seed"' in body
         assert 'cp "$SEED_DIR/$name" "$DATA_DIR/$name"' in body
 
+    def test_the_entrypoint_refuses_a_directory_where_the_env_file_should_be(self) -> None:
+        """Docker 挂一个不存在的宿主文件会把那个路径建成目录。
+
+        而 python-dotenv 碰到目录既不报错也不加载（实测过），于是服务照常起来、
+        一个 Key 都没有，界面上只有一行「缺少配置」。这条守卫把那种情况变成
+        一次说得清的启动失败。
+        """
+        body = ENTRYPOINT.read_text(encoding="utf-8")
+        assert "[ -d /app/.env.local ]" in body, "没有挡住「.env.local 变成目录」那种情况"
+        assert "exit 1" in body
+
 
 class TestTheEntrypointSurvivesLinux:
     def test_it_uses_lf_line_endings(self) -> None:
@@ -236,6 +247,27 @@ class TestComposeKeepsDataOnTheNas:
         body = COMPOSE.read_text(encoding="utf-8")
         assert "restart: unless-stopped" in body
         assert "max-size" in body, "NAS 上日志不限长会一直堆下去"
+
+
+class TestTheSecretsComeFromTheMountedFile:
+    """密钥不写进 compose：那份文件是进版本库的，而这个仓库是公开的。"""
+
+    def test_no_key_is_written_into_the_tracked_file(self) -> None:
+        offenders = [
+            line.strip()
+            for line in COMPOSE.read_text(encoding="utf-8").splitlines()
+            if re.match(r"^(AMAP|DEEPSEEK|DOUBAO)\w*\s*:", line.strip())
+        ]
+        assert not offenders, f"密钥不该写进 compose，应该放进挂载的 .env.local：{offenders}"
+
+    def test_the_env_file_is_mounted_where_the_app_looks_for_it(self) -> None:
+        from lushu import config
+
+        target = f":/app/{config.ENV_FILE.name}:ro"
+        assert target in COMPOSE.read_text(encoding="utf-8"), (
+            f"compose 没把 env 文件挂到 {target} —— config.py 里那个路径是写死的，"
+            f"挂到别的名字上 Key 一个都读不到，而服务照常启动"
+        )
 
 
 class TestTheWorkflowActionsAreOnesThatExist:

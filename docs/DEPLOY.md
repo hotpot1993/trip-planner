@@ -167,38 +167,54 @@ NAS 上 `docker login` 一次即可。
 ## 四、飞牛 NAS 上拉起来
 
 飞牛的「容器」应用支持 Docker Compose 项目，直接把仓库根的
-`docker-compose.yml` 粘进去，改两处：
+`docker-compose.yml` 粘进去，准备两样东西。
+
+### 密钥：挂一个 `.env.local` 进去
+
+compose 里**不写密钥**，密钥放在旁边的 `.env.local`，只读挂进容器。理由是
+那份 compose 会进版本库，而这个仓库是公开的。
+
+在 Compose 项目所在目录建一个 `.env.local`（内容照 `.env.example`）：
+
+```ini
+AMAP_API_KEY=...
+AMAP_JS_KEY=...
+AMAP_JS_SECURITY_CODE=...
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+```
+
+开发机上本来就有这个文件，直接传上去即可。
+
+**容器里的文件名必须是 `.env.local`。** 宿主机上叫什么都行，但挂载点的右边
+得是 `/app/.env.local` —— `lushu/config.py` 里的路径是写死的
+（`ROOT_DIR / ".env.local"`）。挂到 `/app/.env` 上的话，容器照样起得来，
+只是一个 Key 都读不到。
+
+> **⚠️ 这个坑值得单独说：文件必须先建出来。**
+> Docker 挂一个**不存在**的宿主文件时不会报错，它会把容器里那个路径建成一个
+> **目录**。而 `python-dotenv` 碰到目录既不报错也不加载（实测：返回 False，
+> 不抛异常）—— 于是服务照常启动、所有 Key 都缺，界面上只有一行「缺少配置」，
+> 很容易看半天看不出问题在哪。
+>
+> 所以 `deploy/entrypoint.sh` 里加了一道守卫：`/app/.env.local` 要是目录，
+> 直接拒绝启动并说明原因。CI 的 smoke 步骤会把这两种情况都跑一遍 ——
+> 正确挂载时 `warnings` 必须为空，挂成目录时容器必须以退出码 1 停下。
+
+`TZ` 是**故意留在 compose 的 `environment:` 里**的，没放进 `.env.local`：
+时区得在进程启动时就是对的，而不是等 Python 起来之后再去改环境变量。
+
+想改回去用环境变量给密钥也行：`load_dotenv(..., override=False)`，已存在的
+环境变量优先，所以在 compose 里写 `environment:` 会赢过文件。
+
+### 数据目录
 
 ```yaml
-    environment:
-      AMAP_API_KEY: ""                # ← 高德 Web 服务 Key
-      AMAP_JS_KEY: ""                 # ← 高德 JS API Key
-      AMAP_JS_SECURITY_CODE: ""       # ← JS API 安全密钥
-      DEEPSEEK_API_KEY: ""            # ← DeepSeek Key
     volumes:
       - /vol1/1000/docker/lushu/data:/app/data   # ← 换成 NAS 上的真实目录
 ```
 
 `./data` 这种相对路径相对的是 Compose 项目所在目录，飞牛上建议写绝对路径。
-
-### 密钥：两种给法，挑一种
-
-**一是直接写在 compose 的 `environment` 里**（上面那种）。最省事，缺点是
-Key 明文躺在 Compose 文件里，飞牛界面上也看得见。
-
-**二是挂载 `.env.local`**。开发机上本来就有这个文件，传上去即可：
-
-```yaml
-    volumes:
-      - ./data:/app/data
-      - ./env.local:/app/.env.local:ro
-```
-
-`lushu/config.py` 会读 `/app/.env.local`（`load_dotenv(..., override=False)`，
-已存在的环境变量优先）。注意路径是 `ROOT_DIR / ".env.local"`，也就是
-`/app/.env.local`，不是别的目录。
-
-两种都给也可以，环境变量赢。
 
 ### 目录与权限
 
@@ -238,8 +254,13 @@ docker compose exec lushu ls -l /app/data
 ```
 
 `/api/health` 期望看到 `"status": "ok"`、`database.exists` 为 `true`、
-`engine.available` 为 `true`。缺 Key 不会让它失败，只会在 `warnings` 里
-列出来 —— 那是刻意的：缺 Key 也要能打开界面看到提示。
+`engine.available` 为 `true`，**并且 `warnings` 是空的**。
+
+**`warnings` 那一项就是 `.env.local` 读没读到的判据。** 里面但凡出现
+「缺少配置 AMAP_API_KEY」之类，就是密钥没进去 —— 先看那个文件建了没有、
+挂载点右边是不是 `/app/.env.local`。缺 Key 不会让服务起不来（那是刻意的：
+也要能打开界面看到提示），所以不看这一项的话，问题会以「界面能开但什么都
+查不出来」的形式出现。
 
 3 的期望：`lushu.db` 与 `rail_stations.json` 都在。后者是 entrypoint 补的，
 没有它说明卷挂载点不是 `/app/data`，或者补料那一步没跑。
@@ -336,6 +357,8 @@ docker load -i trip-planner.tar
 | entrypoint 补料 | 生效。日志里有「数据目录里没有 rail_stations.json，已从镜像补上」，随后该文件在 `/app/data` 下 |
 | 容器自己的健康检查 | `starting` → `healthy` |
 | 缺 Key 时的行为 | 警告「缺少配置 AMAP_API_KEY、DEEPSEEK_API_KEY」，服务照常提供 |
+| **挂 `.env.local` 这条路** | 通。把一份装着假 Key 的 `.env.local` 挂到 `/app/.env.local:ro`，`warnings` 变成空数组 —— 证明挂载点是对的、键真的被读到了 |
+| **挂成目录时会怎样** | 拒绝启动。宿主文件不存在时 Docker 会建出目录，这时容器以退出码 1 停下，日志里写明「是个目录，不是文件」 |
 
 **记下这批依赖的版本**：构建当天 `pip` 解析出的是
 `fastapi 0.141.1 / uvicorn 0.52.4 / pydantic 2.13.5 / langgraph 1.2.11 /

@@ -1,8 +1,26 @@
 # 飞牛 NAS 部署用。飞牛「容器」应用里可以直接把这份粘进 Compose 项目。
 #
-# 用之前要改两处：
-#   1. 四个 Key 与 LLM 那一段
-#   2. volumes 左边换成 NAS 上的真实目录，例如 /vol1/1000/docker/lushu/data
+# 密钥不写在这份文件里，而是放在旁边的 .env.local，只读挂进容器 ——
+# 因为这份 compose 是进版本库的，而这个仓库是公开的。
+#
+# 用之前要准备两样：
+#
+#   1. 同目录下建一个 .env.local（内容照 .env.example）：
+#        AMAP_API_KEY=...
+#        AMAP_JS_KEY=...
+#        AMAP_JS_SECURITY_CODE=...
+#        LLM_PROVIDER=deepseek
+#        DEEPSEEK_API_KEY=...
+#
+#      ⚠️ 这个文件必须先建出来。Docker 挂一个不存在的宿主文件时不会报错，
+#      它会在容器里把 /app/.env.local 建成一个**目录** —— Key 一个都读不到，
+#      服务却照常启动。entrypoint 会挡住这种情况并说明原因。
+#
+#   2. volumes 里数据目录那行，左边换成 NAS 上的真实目录，
+#      例如 /vol1/1000/docker/lushu/data。
+#
+# 容器里那个文件必须叫 .env.local，不能叫 .env：config.py 里的路径是写死的
+# （ROOT_DIR / ".env.local"），宿主机上叫什么都行，挂进去的名字得对上。
 #
 # image 由 .github/workflows/docker.yml 构建并推送，两边名字必须一致
 # （tests/test_deploy_artifacts.py 盯着这件事）。
@@ -22,19 +40,17 @@ services:
       - "8756:8756"
 
     environment:
-      # 时区必须对：预约提醒按本地日期算「今天」，容器默认 UTC 会差一天。
+      # 时区只留在这里，不放 .env.local：它得在进程启动时就是对的，
+      # 而不是等 Python 起来之后再往 os.environ 里塞。
+      # 预约提醒按本地日期算「今天」，UTC 会差一天且界面上不提。
       TZ: Asia/Shanghai
-      # 缺 Key 不会让服务起不来，界面会提示「缺少配置」，功能受限。
-      AMAP_API_KEY: ""
-      AMAP_JS_KEY: ""
-      AMAP_JS_SECURITY_CODE: ""
-      LLM_PROVIDER: deepseek
-      DEEPSEEK_API_KEY: ""
 
     volumes:
       # 库、素材底档、导出的路书都在这里，删容器不会丢。
       # 挂上卷之后镜像里那份车站名表会被盖住，entrypoint 会在首次启动时补进去。
       - ./data:/app/data
+      # 只读。宿主机上的文件名随意，容器里必须是 .env.local。
+      - ./.env.local:/app/.env.local:ro
 
     # 日志别无限长：默认 json-file 驱动会在 NAS 上一直堆下去。
     logging:

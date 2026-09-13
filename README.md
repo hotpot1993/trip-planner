@@ -181,12 +181,13 @@ pnpm dev
 ### 用 Docker 跑（含飞牛 NAS）
 
 推到 `master` 之后，[`.github/workflows/docker.yml`](.github/workflows/docker.yml)
-会构建镜像并推送到 `hotpot1993/trip-planner`。NAS 那边把
-[`docker-compose.yml`](docker-compose.yml) 粘进飞牛的「容器」应用就行。
+会构建镜像、推送到 `hotpot1993/trip-planner`，再把刚推上去的镜像拉下来跑一遍
+冒烟。NAS 那边把 [`docker-compose.yml`](docker-compose.yml) 粘进飞牛的
+「容器」应用，旁边放一份 `.env.local` 即可。
 
-镜像里既没有 Key 也没有行程数据，两样都在运行时给：Key 走环境变量，
-库与素材走挂载卷。要配的那个 secret、NAS 上的目录与端口、以及一路上
-踩过的坑，见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+镜像里既没有 Key 也没有行程数据：Key 走挂载的 `.env.local`（所以不会进版本库），
+库与素材走挂载卷。要准备的东西、NAS 上的目录与端口、以及一路上踩过的坑，
+见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
 ---
 

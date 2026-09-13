@@ -135,3 +135,44 @@ jobs:
 
           echo "--- 启动日志 ---"
           docker logs lushu
+
+      # NAS 上密钥就是这么给的：挂一个 .env.local 进去。这一段验的就是那条路 ——
+      # 挂载点写错的话（比如挂成了 /app/.env 而不是 /app/.env.local），
+      # 容器照样起得来，只是所有 Key 都缺，界面上只有一行小字。
+      - name: 挂一个 .env.local 进去，确认键真的被读到
+        run: |
+          set -euo pipefail
+          IMAGE=$(echo "${{ needs.image.outputs.tags }}" | head -n1)
+          mkdir -p envcheck
+          printf 'AMAP_API_KEY=dummy-amap\nAMAP_JS_KEY=dummy-js\nAMAP_JS_SECURITY_CODE=dummy-code\nLLM_PROVIDER=deepseek\nDEEPSEEK_API_KEY=dummy-deepseek\n' > envcheck/.env.local
+
+          docker run -d --name lushu-env -p 8757:8756 \
+            -v "$PWD/envcheck/.env.local:/app/.env.local:ro" "$IMAGE"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS -o health-env.json http://127.0.0.1:8757/api/health; then break; fi
+            sleep 2
+          done
+
+          echo "--- 挂了 .env.local 之后的 warnings ---"
+          jq '.warnings' health-env.json
+          # 键读到了就不该再有任何「缺少配置」；这一条就是挂载点对不对的判据
+          jq -e '.warnings | length == 0' health-env.json > /dev/null
+
+      # Docker 挂一个不存在的宿主文件时会把那个路径建成目录，而 python-dotenv
+      # 碰到目录既不报错也不加载。entrypoint 得把这种情况挡住。
+      - name: 挂成目录时必须拒绝启动
+        run: |
+          set -euo pipefail
+          IMAGE=$(echo "${{ needs.image.outputs.tags }}" | head -n1)
+          mkdir -p envdir
+
+          docker run -d --name lushu-bad -v "$PWD/envdir:/app/.env.local:ro" "$IMAGE"
+          sleep 4
+
+          code=$(docker inspect --format '{{.State.ExitCode}}' lushu-bad)
+          echo "退出码：$code"
+          docker logs lushu-bad 2>&1 | tail -6
+
+          test "$code" = "1"
+          docker logs lushu-bad 2>&1 | grep -q '是个目录'

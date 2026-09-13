@@ -1,5 +1,5 @@
 #!/bin/sh
-# 容器启动前的补料。
+# 容器启动前的补料与检查。
 #
 # 补的是什么：车站名表。它按设计放在数据目录里（`config.DATA_DIR /
 # "rail_stations.json"`，由 `lushu/adapters/rail.py` 读取），可一旦给
@@ -15,6 +15,17 @@ set -e
 DATA_DIR="${LUSHU_DATA_DIR:-/app/data}"
 SEED_DIR="/app/lushu/seed"
 mkdir -p "$DATA_DIR"
+
+# 挂 .env.local 有个坑：宿主机的文件要是还没建，Docker 不报错，它会照挂，
+# 只是在容器里把那个路径建成一个**目录**。而 python-dotenv 碰到目录既不说
+# 也不加载（实测返回 False，不抛异常）—— 于是服务照常起来、一个 Key 都没有，
+# 界面上只有一行「缺少配置」。所以这里直接拒绝启动，把原因说清楚。
+if [ -d /app/.env.local ]; then
+    echo "[路书] /app/.env.local 是个目录，不是文件，容器不启动。" >&2
+    echo "        多半是宿主机上那个 .env.local 还没建出来，Docker 就按目录挂进来了。" >&2
+    echo "        在宿主机上建好它（内容照 .env.example），或者去掉 compose 里那条挂载。" >&2
+    exit 1
+fi
 
 for name in rail_stations.json; do
     if [ ! -e "$DATA_DIR/$name" ] && [ -e "$SEED_DIR/$name" ]; then
