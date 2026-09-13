@@ -545,10 +545,14 @@ def _insert_plan(conn: sqlite3.Connection, trip_id: str, draft: PlannedTrip) -> 
             for seq, item in enumerate(day.items):
                 if item.poi_id and item.facts:
                     _upsert_poi(conn, item.poi_id, item.title, stay.city_adcode or "", item.facts)
+                # 天项自己也留一份坐标与地址：餐饮没有实体 id，
+                # 而路书要算「从上一个地方走多久能到这家店」（迁移 10）
+                facts = item.facts
                 conn.execute(
                     "INSERT INTO day_item "
-                    "(id, day_id, seq, kind, poi_id, title, start_time, end_time, note, origin) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai')",
+                    "(id, day_id, seq, kind, poi_id, title, start_time, end_time, note, origin, "
+                    " address, lat_gcj02, lng_gcj02) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?, ?, ?)",
                     (
                         new_id(DAY_ITEM),
                         day_id,
@@ -559,6 +563,9 @@ def _insert_plan(conn: sqlite3.Connection, trip_id: str, draft: PlannedTrip) -> 
                         item.start_time,
                         item.end_time,
                         item.note,
+                        facts.address if facts else None,
+                        facts.lat_gcj02 if facts else None,
+                        facts.lng_gcj02 if facts else None,
                     ),
                 )
 
@@ -767,7 +774,12 @@ def _load_stays(conn: sqlite3.Connection, trip_row: sqlite3.Row) -> tuple[Planne
 def _load_day(conn: sqlite3.Connection, day_row: sqlite3.Row) -> PlannedDay:
     item_rows = conn.execute(
         "SELECT i.kind, i.poi_id, i.title, i.start_time, i.end_time, i.note, "
-        "       p.lat_gcj02, p.lng_gcj02, p.address, p.tel, p.rating, p.open_time, p.photo_url "
+        # 坐标与地址优先取实体上的（ADR-0002：高德是硬事实的来源）；
+        # 餐饮没有实体，退回天项自己记下的那一份（迁移 10）
+        "       COALESCE(p.lat_gcj02, i.lat_gcj02) AS lat_gcj02, "
+        "       COALESCE(p.lng_gcj02, i.lng_gcj02) AS lng_gcj02, "
+        "       COALESCE(p.address, i.address) AS address, "
+        "       p.tel, p.rating, p.open_time, p.photo_url "
         "FROM day_item i LEFT JOIN poi p ON p.amap_poi_id = i.poi_id "
         "WHERE i.day_id = ? ORDER BY i.seq",
         (day_row["id"],),
@@ -794,6 +806,32 @@ def _item_from_row(row: sqlite3.Row) -> PlannedItem:
     title = row["title"] or ""
     awaiting_alignment = kind is ItemKind.POI and not poi_id
 
+    # 「有没有事实」由有没有事实决定，**不是**由有没有实体 id 决定。
+    # 原先这里只在 `poi_id` 非空时才建 facts，于是餐饮项即使有坐标与地址
+    # （迁移 10 记下的）也会被读出来再丢掉——路书那边直接查库所以看不出，
+    # 界面上却拿不到「这家店在哪」。
+    facts = PoiFacts(
+        lat_gcj02=row["lat_gcj02"],
+        lng_gcj02=row["lng_gcj02"],
+        address=row["address"],
+        tel=row["tel"],
+        rating=row["rating"],
+        open_time=row["open_time"],
+        photo=row["photo_url"],
+    )
+    has_anything = any(
+        value is not None
+        for value in (
+            facts.lat_gcj02,
+            facts.lng_gcj02,
+            facts.address,
+            facts.tel,
+            facts.rating,
+            facts.open_time,
+            facts.photo,
+        )
+    )
+
     return PlannedItem(
         kind=kind,
         title=title,
@@ -801,17 +839,7 @@ def _item_from_row(row: sqlite3.Row) -> PlannedItem:
         start_time=row["start_time"],
         end_time=row["end_time"],
         note=row["note"],
-        facts=PoiFacts(
-            lat_gcj02=row["lat_gcj02"],
-            lng_gcj02=row["lng_gcj02"],
-            address=row["address"],
-            tel=row["tel"],
-            rating=row["rating"],
-            open_time=row["open_time"],
-            photo=row["photo_url"],
-        )
-        if poi_id
-        else None,
+        facts=facts if has_anything else None,
         unresolved_name=title if awaiting_alignment else None,
     )
 

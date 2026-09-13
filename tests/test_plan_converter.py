@@ -247,6 +247,40 @@ def test_meal_is_converted_with_reason_as_note() -> None:
     assert meal.note == "南京大牌档的理由"
 
 
+def test_meal_keeps_its_coordinates_and_address() -> None:
+    """餐饮项要留下坐标与地址。
+
+    引擎的餐饮环节是从高德周边搜索拿到的餐厅，`restaurant_to_dict` 返回了
+    `location` 与 `address`——只是没有 id（给餐厅编个 id 塞进 `poi` 表会污染
+    实体，见迁移 10）。以前这里把坐标一起丢了，后果是路书上
+    「这段路没有坐标」出现七次，全部来自餐饮项：**中午从博物馆走多久能到
+    那家店，行程里答不出来。**
+    """
+    days = _three_days()
+    days[0]["timeline"][1] = {
+        **_meal("lunch", "南京大牌档"),
+        "location": {"lng": 118.79, "lat": 32.06},
+        "address": "中山陵景区内",
+    }
+    meal = _convert(_plan(days)).stays[0].days[0].items[1]
+
+    assert meal.facts is not None
+    assert meal.facts.lat_gcj02 == pytest.approx(32.06)
+    assert meal.facts.lng_gcj02 == pytest.approx(118.79)
+    assert meal.facts.address == "中山陵景区内"
+    # 餐厅没有实体 id，这是对的——编一个会污染实体表
+    assert meal.poi_id is None
+
+
+def test_meal_without_location_still_converts() -> None:
+    """引擎没给坐标时照样是个天项，只是路书里那段路算不出来。"""
+    meal = _convert(_plan(_three_days())).stays[0].days[0].items[1]
+
+    assert meal.kind is ItemKind.MEAL
+    assert meal.facts is not None
+    assert not meal.facts.has_coordinates
+
+
 def test_missing_restaurant_becomes_a_readable_placeholder() -> None:
     """引擎没找到餐厅时给 name=None，不能变成一个空标题的天项。"""
     meal = _convert(_plan(_three_days())).stays[0].days[1].items[1]

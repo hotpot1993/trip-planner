@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -516,6 +516,28 @@ CREATE TABLE gold_set (
 ALTER TABLE extraction_run ADD COLUMN accepted_json TEXT;
 """
 
+# ─── 迁移 10：天项自己记住坐标与地址 ─────────────────────────────
+#
+# 天项的坐标原先只存在 `poi` 表里，靠 `day_item.poi_id` 指过去。这对**景点**
+# 是成立的——ADR-0002 说高德是实体真源，景点有 id、有坐标。
+#
+# 但餐饮不是。引擎的餐饮环节确实从高德周边搜索拿到了餐厅的坐标与地址
+# （`restaurant_to_dict` 返回 `location` 与 `address`），却**没有 id**——
+# 给餐厅编一个 id 塞进 `poi` 表是错的：那会污染实体表，让餐厅出现在候选池
+# 与结论里。于是转换层只能把坐标丢掉，天项上就只剩一个店名。
+#
+# 后果在路书上看得见：导出时「这段路没有坐标，到当地问一下」出现了 7 次，
+# 全部来自餐饮项——**中午从博物馆走多久能到那家店，行程里答不出来**。
+#
+# 所以坐标与地址要在天项上留一份。这是对 ADR-0001 的补充而不是违背：
+# 它记的是「这个地方在哪儿」，来源仍然是官方接口。
+#
+_MIGRATION_10 = """
+ALTER TABLE day_item ADD COLUMN address TEXT;
+ALTER TABLE day_item ADD COLUMN lat_gcj02 REAL;
+ALTER TABLE day_item ADD COLUMN lng_gcj02 REAL;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -526,6 +548,7 @@ _MIGRATIONS: dict[int, str] = {
     7: _MIGRATION_7,
     8: _MIGRATION_8,
     9: _MIGRATION_9,
+    10: _MIGRATION_10,
 }
 
 

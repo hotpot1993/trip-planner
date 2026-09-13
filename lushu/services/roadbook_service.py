@@ -224,28 +224,26 @@ def assemble(
                 title = row["title"] or (poi["name"] if poi else "（未命名）")
                 if row["kind"] == "poi" and poi is None:
                     warnings.append(f"{day['date']} 「{title}」还没对上实体，挂不上攻略")
+                # 坐标优先取实体上的（ADR-0002：高德是硬事实的来源）；
+                # 餐饮没有实体，取天项自己记下的那一份（迁移 10）
+                lat = (poi["lat_gcj02"] if poi else None) or row["lat_gcj02"]
+                lng = (poi["lng_gcj02"] if poi else None) or row["lng_gcj02"]
                 roadbook_items.append(
                     RoadbookItem(
                         title=title,
                         kind=row["kind"],
                         start_time=row["start_time"],
                         end_time=row["end_time"],
-                        address=(poi["address"] if poi else None),
+                        address=(poi["address"] if poi else None) or row["address"],
                         note=row["note"],
                         highlights=tuple(c.text for c in claims if c.polarity == "highlight"),
                         avoids=tuple(c.text for c in claims if c.polarity == "avoid"),
                         booking=_booking_text(active, row["poi_id"]) if row["poi_id"] else None,
-                        lat_gcj02=(poi["lat_gcj02"] if poi else None),
-                        lng_gcj02=(poi["lng_gcj02"] if poi else None),
+                        lat_gcj02=lat,
+                        lng_gcj02=lng,
                     )
                 )
-                points.append(
-                    _Point(
-                        name=title,
-                        lat=(poi["lat_gcj02"] if poi else None),
-                        lng=(poi["lng_gcj02"] if poi else None),
-                    )
-                )
+                points.append(_Point(name=title, lat=lat, lng=lng))
 
             legs = tuple(
                 estimate_leg(points[index], points[index + 1])

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -161,11 +162,65 @@ def test_round_trip_preserves_item_times_and_notes(db: sqlite3.Connection) -> No
     assert items[1].kind is ItemKind.MEAL
 
 
-def test_meal_items_have_no_facts(db: sqlite3.Connection) -> None:
+def test_meal_items_have_no_facts_when_there_is_nothing_to_say(
+    db: sqlite3.Connection,
+) -> None:
+    """餐饮项没有坐标也没有地址时，`facts` 应当是 None。
+
+    「有没有事实」由有没有事实决定，不是由有没有实体 id 决定——
+    有坐标的餐饮项会带上 facts（迁移 10），那是对的，见下一个测试。
+    """
     trip_id = save_planned_trip(_draft(), conn=db)
     loaded = load_trip(trip_id, conn=db)
     assert loaded is not None
     assert loaded.plan.stays[0].days[0].items[1].facts is None
+
+
+def test_meal_coordinates_survive_a_round_trip(db: sqlite3.Connection) -> None:
+    """餐饮的坐标与地址要在落库—读回之间活下来（迁移 10）。
+
+    餐厅没有实体 id，所以它只能存在天项自己身上——路书靠它算出
+    「从上一个地方走多久能到这家店」，界面靠它显示这家店在哪。
+    丢了它就只剩一个店名。
+    """
+    draft = _draft()
+    day = draft.stays[0].days[0]
+    meal = day.items[1]
+    draft = replace(
+        draft,
+        stays=(
+            replace(
+                draft.stays[0],
+                days=(
+                    replace(
+                        day,
+                        items=(
+                            day.items[0],
+                            replace(
+                                meal,
+                                facts=PoiFacts(
+                                    lat_gcj02=NANJING_LAT,
+                                    lng_gcj02=NANJING_LNG,
+                                    address="中山陵景区内",
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    trip_id = save_planned_trip(draft, conn=db)
+    loaded = load_trip(trip_id, conn=db)
+
+    assert loaded is not None
+    item = loaded.plan.stays[0].days[0].items[1]
+    assert item.facts is not None
+    assert item.facts.lat_gcj02 == pytest.approx(NANJING_LAT)
+    assert item.facts.address == "中山陵景区内"
+    # 餐饮没有实体主键，将来也不该有——编一个会污染实体表
+    assert item.poi_id is None
 
 
 def test_poi_rows_are_written_with_gcj02_columns(db: sqlite3.Connection) -> None:

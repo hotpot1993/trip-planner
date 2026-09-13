@@ -74,6 +74,8 @@ class ItemOut(BaseModel):
     start_time: str | None = None
     end_time: str | None = None
     note: str | None = None
+    # 坐标优先来自 `poi` 表（ADR-0002）；餐饮没有实体，取天项自己记下的
+    # 那一份（迁移 10）——路书就是靠它算出「走多久到那家店」的
     lat_gcj02: float | None = None
     lng_gcj02: float | None = None
     address: str | None = None

@@ -218,7 +218,14 @@ def _parse_facts(raw: Mapping[str, Any]) -> PoiFacts:
 
 
 def _convert_meal(kind_raw: str, raw: Mapping[str, Any]) -> PlannedItem:
-    """转换一个餐饮事项。引擎没找到合适餐厅时会给出 name=None。"""
+    """转换一个餐饮事项。引擎没找到合适餐厅时会给出 name=None。
+
+    **坐标与地址要留下来。** 引擎的餐饮环节是从高德周边搜索拿到的餐厅，
+    `restaurant_to_dict` 返回了 `location` 与 `address`——只是没有 id
+    （给餐厅编个 id 塞进 `poi` 表会污染实体，见迁移 10 的注释）。
+    以前这里把坐标一起丢了，后果是路书上「这段路没有坐标」出现七次，
+    全部来自餐饮项：**中午从博物馆走多久能到那家店，行程里答不出来。**
+    """
     label = _MEAL_LABELS[kind_raw]
     name = _clean_text(raw.get("name"))
     no_restaurant = bool(raw.get("no_restaurant")) or name is None
@@ -237,6 +244,7 @@ def _convert_meal(kind_raw: str, raw: Mapping[str, Any]) -> PlannedItem:
         start_time=_clean_text(raw.get("start_time")),
         end_time=_clean_text(raw.get("end_time")),
         note=reason,
+        facts=_parse_facts(raw),
     )
 
 
