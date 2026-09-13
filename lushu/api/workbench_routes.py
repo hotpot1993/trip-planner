@@ -1,21 +1,26 @@
 """数据工作台的接口。
 
 三类队列共用一套形状（Q47）：待对齐、待复核预约规则、待标注金标准。
-本模块先做 M3 的两类——**待对齐**与**提纯概览**，预约规则的复核属于 M4。
+M3 做了**待对齐**、**提纯概览**与**金标准标注**（在 `gold_routes.py`），
+M4 补上**预约规则的复核**。
 
 一条贯穿本模块的原则：**接口只呈现，不自动决定**。对不上的提及不会因为
 「前五名里有一个看起来挺像」就被自动接受，那种自动决定正是设计里
-最危险的失败模式（跨城挂错、挂到停车场）。接口给候选与拒绝理由，人来选。
+最危险的失败模式（跨城挂错、挂到停车场）。预约规则的复核同理：
+接口给出规则全文、来源链接与体检结果，签不签字由人定。
 """
 
 from __future__ import annotations
+
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi import Path as PathParam
 from pydantic import BaseModel
 
+from lushu.domain.booking import RuleStatus, Severity, lint_rule
+from lushu.services import booking_store, pipeline
 from lushu.services import knowledge_store as ks
-from lushu.services import pipeline
 
 router = APIRouter(prefix="/api/workbench", tags=["数据工作台"])
 
@@ -395,3 +400,166 @@ def local_pois(
         )
         for row in ks.search_local_pois(q, city_adcode=city_adcode, limit=limit)
     ]
+
+
+# ─── 待复核的预约规则（Q47 的第三类队列）────────────────────────
+
+
+class BookingRuleOut(BaseModel):
+    """一条预约规则，连同它的体检结果。
+
+    `findings` 要与规则**一起**返回：复核是「看着体检结果签字」，
+    把两者分两次请求，界面就有机会显示一条没有体检结论的规则。
+    """
+
+    poi_id: str
+    poi_name: str
+    status: str  # draft | reviewed
+    booking_required: bool
+    advance_days: int | None
+    release_time: str | None
+    channels: list[dict]
+    requires_real_name: bool | None
+    id_required_note: str | None
+    closed_days_weekdays: list[int]
+    evidence_url: str | None
+    reviewed_at: str | None
+    verify_due_at: str | None
+    reviewer_note: str | None
+    errors: list[str]
+    warnings: list[str]
+
+    @property
+    def can_review(self) -> bool:
+        return not self.errors
+
+
+class ChannelIn(BaseModel):
+    name: str
+    kind: str
+    url: str | None = None
+
+
+class ReviewIn(BaseModel):
+    """复核一条规则。
+
+    允许在这一步补上来源链接与备注——人一边核一边发现问题、顺手补材料，
+    是这条流程里最自然的动作。
+    """
+
+    evidence_url: str | None = None
+    note: str | None = None
+    # 撤回复核。规则会变（湖南博物院 2026-07 刚从「提前 7 天」改成「提前 5 天」），
+    # 发现不对时要能立刻停止展示，而不是只能删掉重来。
+    revoke: bool = False
+
+
+def _rule_out(rule, name: str, *, today: date) -> BookingRuleOut:
+    findings = lint_rule(rule, today=today, poi_name=name)
+    return BookingRuleOut(
+        poi_id=rule.poi_id,
+        poi_name=name,
+        status=rule.status.value,
+        booking_required=rule.booking_required,
+        advance_days=rule.advance_days,
+        release_time=rule.release_time,
+        channels=[
+            {"name": item.name, "kind": item.kind.value, "url": item.url}
+            for item in rule.channels
+        ],
+        requires_real_name=rule.requires_real_name,
+        id_required_note=rule.id_required_note,
+        closed_days_weekdays=list(rule.closed_days.weekdays),
+        evidence_url=rule.evidence_url,
+        reviewed_at=rule.reviewed_at.isoformat() if rule.reviewed_at else None,
+        verify_due_at=rule.verify_due_at.isoformat() if rule.verify_due_at else None,
+        reviewer_note=rule.reviewer_note,
+        errors=[item.message for item in findings if item.severity is Severity.ERROR],
+        warnings=[item.message for item in findings if item.severity is not Severity.ERROR],
+    )
+
+
+@router.get("/booking-rules", response_model=list[BookingRuleOut])
+def list_booking_rules(
+    pending_only: bool = Query(default=False),
+) -> list[BookingRuleOut]:
+    """预约规则的复核队列。
+
+    `pending_only=true` 只看草案——复核队列里最该先看的就是这些：
+    它们现在**不对用户可见**，于是行程上不会提醒，而这正是最怕白跑的地方。
+    """
+    rules = booking_store.all_rules()
+    if pending_only:
+        rules = [item for item in rules if item.status is RuleStatus.DRAFT]
+
+    names = booking_store.poi_names()
+    today = date.today()
+    return [
+        _rule_out(rule, names.get(rule.poi_id, rule.poi_id), today=today) for rule in rules
+    ]
+
+
+@router.post("/booking-rules/{poi_id}/review", response_model=BookingRuleOut)
+def review_booking_rule(poi_id: str, payload: ReviewIn) -> BookingRuleOut:
+    """复核（或撤回复核）一条预约规则。
+
+    体检有 error 时**拒绝复核**并说明是哪一关没过——这是这道门禁唯一的意义：
+    与其把一条算不出放票日的规则放出去，不如让它继续待在草案里报错。
+    """
+    from lushu.store import transaction
+
+    rule = booking_store.get_rule(poi_id)
+    if rule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="没有这条预约规则")
+
+    if payload.revoke:
+        from lushu.domain.booking import BookingRule as RuleModel
+        from lushu.services.booking_store import write_rule
+
+        revoked = RuleModel(
+            poi_id=rule.poi_id,
+            booking_required=rule.booking_required,
+            status=RuleStatus.DRAFT,
+            advance_days=rule.advance_days,
+            release_time=rule.release_time,
+            channels=rule.channels,
+            requires_real_name=rule.requires_real_name,
+            id_required_note=rule.id_required_note,
+            closed_days=rule.closed_days,
+            evidence_url=rule.evidence_url,
+            reviewed_at=None,
+            reviewer_note=rule.reviewer_note,
+        )
+        with transaction() as conn:
+            write_rule(conn=conn, rule=revoked, now=_now())
+        names = booking_store.poi_names()
+        return _rule_out(revoked, names.get(poi_id, poi_id), today=date.today())
+
+    with transaction() as conn:
+        ok = booking_store.review_rule(
+            conn=conn,
+            poi_id=poi_id,
+            evidence_url=payload.evidence_url,
+            note=payload.note,
+        )
+
+    names = booking_store.poi_names()
+    today = date.today()
+    if not ok:
+        current = booking_store.get_rule(poi_id)
+        assert current is not None
+        out = _rule_out(current, names.get(poi_id, poi_id), today=today)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"复核没过：{'；'.join(out.errors) or '缺少来源链接'}",
+        )
+
+    updated = booking_store.get_rule(poi_id)
+    assert updated is not None
+    return _rule_out(updated, names.get(poi_id, poi_id), today=today)
+
+
+def _now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
