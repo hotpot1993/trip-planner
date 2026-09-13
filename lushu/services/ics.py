@@ -138,6 +138,10 @@ def _description(alert: BookingAlert, *, trip_name: str | None) -> str:
         lines.append("需要实名：提前把同行人的证件信息填好，放票时直接选人。")
     if alert.id_required_note:
         lines.append(f"证件要求：{alert.id_required_note}")
+    if alert.note:
+        lines.append("")
+        lines.append("注意：")
+        lines.append(alert.note)
 
     lines.append("")
     lines.append("规则来自路书的预约规则库，出发前请以官方渠道为准。")

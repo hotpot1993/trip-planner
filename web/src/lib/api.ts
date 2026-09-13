@@ -322,6 +322,8 @@ export interface BookingAlertOut {
   channels: BookingChannelOut[]
   requires_real_name: boolean | null
   id_required_note: string | null
+  /** 复核时写下的「坑」。它原本只出现在复核界面，等于查到了却没告诉用户。 */
+  note: string | null
 }
 
 export interface TripBookingOut {

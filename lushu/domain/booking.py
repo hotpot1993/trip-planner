@@ -159,6 +159,10 @@ class BookingAlert:
     # 「每个账号最多添加 5 名常用观众」这类要求。到了要抢票的那一刻才知道，
     # 就来不及了——它必须在清单上，与放票时刻一起出现。
     id_required_note: str | None = None
+    # 复核时写下的「坑」：不卖现场票、周一闭馆、暑期延到 21:00、
+    # 官网写的时刻已经作废……这些恰恰是最容易让人白跑的话。
+    # 它原本只出现在复核界面，等于查到了却没告诉用户。
+    note: str | None = None
 
     @property
     def has_fixed_time(self) -> bool:
@@ -236,6 +240,7 @@ def build_alert_list(
                 requires_real_name=rule.requires_real_name,
                 city_name=visit.city_name,
                 id_required_note=rule.id_required_note,
+                note=rule.reviewer_note,
             )
         )
 

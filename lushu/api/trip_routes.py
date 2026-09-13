@@ -198,6 +198,8 @@ class BookingAlertOut(BaseModel):
     channels: list[BookingChannelOut]
     requires_real_name: bool | None
     id_required_note: str | None
+    # 复核时写下的「坑」。它原本只出现在复核界面，等于查到了却没告诉用户。
+    note: str | None
 
 
 class TripBookingOut(BaseModel):
@@ -580,6 +582,7 @@ def trip_booking(
                 ],
                 requires_real_name=alert.requires_real_name,
                 id_required_note=alert.id_required_note,
+                note=alert.note,
             )
             for alert in alerts
         ],

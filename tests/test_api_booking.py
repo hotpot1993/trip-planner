@@ -168,6 +168,43 @@ class TestBookingCalendar:
         assert response.text.rstrip().endswith("END:VCALENDAR")
 
 
+def _seed_rule_with_note(api_client, trip_id: str) -> None:
+    """排一天故宫、写一条带复核备注的规则。
+
+    顺序不能反：`booking_rule.poi_id` 有外键指向 `poi`，
+    poi 得先由 `_poi_and_visit` 建出来。
+    """
+    from datetime import date
+
+    from lushu.domain.booking import BookingRule, RuleStatus
+    from lushu.services import booking_store as bs
+
+    _poi_and_visit(api_client, trip_id)
+    from lushu.config import DB_PATH
+    from lushu.store import connect as real_connect
+
+    conn = real_connect(DB_PATH)
+    try:
+        with conn:
+            bs.write_rule(
+                conn=conn,
+                rule=BookingRule(
+                    poi_id="B000A8UIN8",
+                    booking_required=True,
+                    status=RuleStatus.REVIEWED,
+                    advance_days=7,
+                    release_time="20:00",
+                    requires_real_name=True,
+                    evidence_url="https://www.dpm.org.cn/visit.html",
+                    reviewed_at=date(2026, 1, 1),
+                    reviewer_note="不卖现场票，周一闭馆",
+                ),
+                now="2026-09-12T10:00:00",
+            )
+    finally:
+        conn.close()
+
+
 class TestBookingList:
     def test_lists_the_alert_with_everything_needed_to_act(
         self, api_client, stub_cities
@@ -227,6 +264,28 @@ class TestBookingList:
         payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
         assert payload["alerts"] == []
         assert payload["pending_review"] == ["故宫博物院"]
+
+    def test_note_reaches_the_traveller(self, api_client, stub_cities) -> None:
+        """复核时写下的「坑」必须送到用户手上。
+
+        「不卖现场票」「周一闭馆」「暑期延到 21:00」这类话恰恰最容易让人白跑，
+        而它原本只出现在复核界面——等于查到了却没告诉用户。
+        """
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        _seed_rule_with_note(api_client, trip_id)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking?today=2026-09-20").json()
+
+        assert payload["alerts"][0]["note"] == "不卖现场票，周一闭馆"
+
+    def test_note_goes_into_the_calendar_too(self, api_client, stub_cities) -> None:
+        """日历会在手机上躺很久，坑要跟着一起走。"""
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        _seed_rule_with_note(api_client, trip_id)
+
+        body = api_client.get(f"/api/trips/{trip_id}/booking.ics").text
+
+        assert "不卖现场票" in body.replace("\r\n ", "")
 
     def test_missing_trip_is_404(self, api_client, stub_cities) -> None:
         assert api_client.get("/api/trips/trip_nope/booking").status_code == 404
