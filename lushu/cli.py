@@ -1164,9 +1164,10 @@ def _cmd_align_recheck(args: argparse.Namespace) -> int:
 
     print()
     print(f"{len(changed)} 条提及的落点变了（共 {len(plans)} 条）：")
-    for item in sorted(changed, key=lambda p: -p.claim_count):
+    for item in sorted(changed, key=lambda p: -p.reference_count):
         print()
-        print(f"  「{item.subject_name}」{item.claim_count} 条结论")
+        print(f"  「{item.subject_name}」"
+              f"{item.claim_count} 条结论、{item.item_count} 个行程天项")
         print(f"    现在挂在 {item.current_name}（{item.current_poi_id}）")
         print(f"    重跑会挂到 {item.new_name}（{item.new_poi_id}）")
 
@@ -1180,8 +1181,10 @@ def _cmd_align_recheck(args: argparse.Namespace) -> int:
         report = realign.apply_plans(changed, conn=conn)
 
     print()
-    print(f"搬了 {report.moved_claims} 条结论（{report.moved_subjects} 条提及），"
-          f"并重算了独立来源数")
+    print(f"搬了 {report.moved_claims} 条结论、{report.moved_items} 个行程天项"
+          f"（{report.moved_subjects} 条提及），并重算了独立来源数")
+    if report.moved_items:
+        print("行程天项的标题没动——那行字是人看到的景点名，与它指向哪个实体是两回事。")
     for name, why in report.skipped:
         print(f"  跳过「{name}」：{why}")
     return 0
