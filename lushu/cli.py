@@ -28,7 +28,32 @@ PLANNED_PIPELINE = """\
 _SITE_CHOICES = ("mafengwo", "zhihu", "qiongyou", "ctrip", "xhs", "manual")
 
 
+def _tolerate_unprintable(stream) -> None:
+    """控制台编不出来的字符降级成 `?`，而不是让整条命令崩掉。
+
+    这条是为**报错路径本身**准备的。契约校验与规则体检发现 ERROR 时会打印 `✗`
+    （U+2717），而 Windows 控制台默认是 GBK（cp936），`✗` 不在 GBK 里——于是
+    `print` 直接抛 `UnicodeEncodeError`，人看到的是一串 traceback，
+    **错误内容一个字都没印出来**。这正是最该看见它的时刻。
+
+    同一个坑上还排着 `✅`、`⚠`，分别在规则列表、金标准进度与评测里。
+
+    放宽的是 `errors` 而不是 `encoding`：中文在 GBK 里有，照常显示；
+    编不出来的退化成一个问号。**装饰性符号可以退化，消息不行。**
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return  # 被重定向到了没有 reconfigure 的对象（测试里的捕获、StringIO）
+    try:
+        reconfigure(errors="replace")
+    except (ValueError, OSError):  # 流已关闭或不可重配，不该因此崩
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerate_unprintable(sys.stdout)
+    _tolerate_unprintable(sys.stderr)
+
     parser = argparse.ArgumentParser(
         prog="ls",
         description="路书 —— 本地优先的旅行攻略规划工具",
