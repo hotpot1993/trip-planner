@@ -106,12 +106,19 @@ def extract_documents(
     conn: sqlite3.Connection | None = None,
     document_ids: list[str] | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
+    force: bool = False,
 ) -> ExtractionReport:
     """对素材跑提纯，把通过引文校验的候选挂到待对齐队列上。
 
     为什么不在这一步直接写入 claim：对齐是另一步（可能要人工），
     而对不上的候选**不该进知识库**。所以提纯的产出先落在
     `alignment_task` 的载荷里，对齐成功后才由 `align_pending` 落库。
+
+    `force=True` 连已经成功提纯过的篇也重跑一遍。它**不额外花钱**：
+    `llm_cache` 按「提示词版本 + 模型 + 标题 + 正文」缓存，同样的输入直接命中。
+    用途是补齐 `extraction_run.accepted_json`——迁移 9 之前跑的篇没有这一列，
+    而它是评测的预测池（评测那边有从待办与证据行捡回来的兜底，
+    但兜底终究会漏掉个别候选，重跑一遍才是完整的）。
     """
     from lushu.adapters.extract import ExtractionError, extract
 
@@ -119,7 +126,9 @@ def extract_documents(
     active = conn or connect()
     report = ExtractionReport()
     try:
-        rows = _documents_to_extract(active, document_ids=document_ids, limit=limit)
+        rows = _documents_to_extract(
+            active, document_ids=document_ids, limit=limit, force=force
+        )
         for row in rows:
             document_id = row["id"]
             report.documents += 1
@@ -160,6 +169,7 @@ def extract_documents(
                 input_chars=len(row["body_text"]),
                 output_chars=len(raw.raw_json or ""),
                 duration_ms=raw.duration_ms,
+                accepted=_accepted_payload(outcome),
                 created_at=_now(),
             )
 
@@ -183,17 +193,25 @@ def _documents_to_extract(
     *,
     document_ids: list[str] | None,
     limit: int,
+    force: bool = False,
 ) -> list[sqlite3.Row]:
     """挑出要提纯的素材。
 
     已经成功提纯过的不重复跑——重跑要花钱，而 `llm_cache` 只挡得住
     完全相同的输入。真正的去重靠这里：`extraction_run` 里有成功记录就跳过。
+    `force` 例外，见 `extract_documents`。
     """
     if document_ids:
         placeholders = ",".join("?" for _ in document_ids)
         return conn.execute(
             f"SELECT id, title, body_text FROM source_document WHERE id IN ({placeholders})",
             document_ids,
+        ).fetchall()
+
+    if force:
+        return conn.execute(
+            "SELECT id, title, body_text FROM source_document ORDER BY imported_at LIMIT ?",
+            (limit,),
         ).fetchall()
 
     return conn.execute(
@@ -204,6 +222,31 @@ def _documents_to_extract(
         ") ORDER BY d.imported_at LIMIT ?",
         (limit,),
     ).fetchall()
+
+
+def _claim_payload(verified: VerifiedClaim) -> dict:
+    """一条通过校验的候选在库里的形状。
+
+    待对齐队列与提纯运行记录用的是同一个形状——评测要拿后者当预测池，
+    两处形状一旦分叉，「模型抽到的」与「人工看到的」就不是同一批东西了。
+    """
+    claim = verified.claim
+    return {
+        "subject_name": claim.subject_name,
+        "subject_type": claim.subject_type.value,
+        "polarity": claim.polarity.value,
+        "facet": claim.facet.value,
+        "text": claim.text,
+        "quote": claim.quote,
+        "char_start": verified.location.start,
+        "char_end": verified.location.end,
+        "quote_verdict": verified.location.verdict.value,
+    }
+
+
+def _accepted_payload(outcome) -> list[dict]:
+    """一次提纯里全部通过校验的候选。评测的预测池就是它。"""
+    return [_claim_payload(item) for item in outcome.accepted]
 
 
 def _park_verified_claims(
@@ -224,21 +267,8 @@ def _park_verified_claims(
         key = (claim.subject_name, claim.subject_type.value)
         by_subject.setdefault(key, []).append(verified)
 
-    for (subject_name, subject_type), items in by_subject.items():
-        payload = [
-            {
-                "subject_name": subject_name,
-                "subject_type": subject_type,
-                "polarity": item.claim.polarity.value,
-                "facet": item.claim.facet.value,
-                "text": item.claim.text,
-                "quote": item.claim.quote,
-                "char_start": item.location.start,
-                "char_end": item.location.end,
-                "quote_verdict": item.location.verdict.value,
-            }
-            for item in items
-        ]
+    for (subject_name, _subject_type), items in by_subject.items():
+        payload = [_claim_payload(item) for item in items]
         # 对齐已经做过的（人工处置过的）主体名不再重复开待办
         if _already_handled(conn, document_id, subject_name):
             continue

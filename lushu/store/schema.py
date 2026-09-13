@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -472,6 +472,50 @@ DROP TABLE source_group;
 ALTER TABLE source_group_new RENAME TO source_group;
 """
 
+# ─── 迁移 9：金标准集与评测的落点 ─────────────────────────────────
+#
+# 三处，都是「要报出抽取精确率、召回率与对齐准确率」缺的东西：
+#
+# 一、`gold_label.subject_name`。迁移 1 建这张表时只记了 `expected_poi_id`，
+#     那是**对齐之后**的答案。但标注发生在对齐之前：人看着原文写下「兵马俑
+#     门票 120」时，脑子里的是「兵马俑」这个叫法，不一定顺手把 POI id 也选上。
+#     没有提及名，比对预测时主体这一项就无从比起（ADR-0010）。
+#
+# 二、`gold_set`。金标准集必须是一个**明确的集合**，不能靠「有没有
+#     gold_label 行」反推：一篇读完发现全是废话、一条真结论都没有的素材，
+#     零标注行恰恰是最重要的标注结果（它进召回率的分母）。所以要显式记
+#     「这篇我标注完了」，而不是让沉默同时表示「标完了没结论」和「还没标」。
+#
+#     顺带记下标注时**有没有看过模型输出**。看过后再标，人会不自觉地
+#     只修模型给的东西而漏掉模型没抽到的——这是金标准最常见的偏差来源，
+#     必须留在数据里，否则日后没法判断某个指标偏乐观是不是标注方式造成的。
+#
+# 三、`extraction_run.accepted_json`。评测的预测池需要一个稳定来源。
+#     不能拿 `claim` 表当预测池：落库的 claim 只是「抽到且对齐上了」的那些，
+#     把它当分母会把对齐失败算成抽取错误——那正是三个指标要分开的原因。
+#     也不能拿 `alignment_task.extracted_claims_json`：那是按主体名归堆的
+#     待办，处置过的会散落各处。提纯的输出就留在提纯自己的运行记录上。
+#
+_MIGRATION_9 = """
+ALTER TABLE gold_label ADD COLUMN subject_name TEXT;
+ALTER TABLE gold_label ADD COLUMN note TEXT;
+-- 引文是原样命中还是宽松命中（空白与全角半角差异）。人对错误率的影响要看得见
+ALTER TABLE gold_label ADD COLUMN quote_verdict TEXT;
+
+CREATE TABLE gold_set (
+    source_document_id  TEXT PRIMARY KEY REFERENCES source_document(id) ON DELETE CASCADE,
+    annotator           TEXT,
+    -- 标注时是否参考过模型输出：0 是盲标（先自己读原文写结论），
+    -- 1 是看着候选增删。偏差方向不同，指标要分开看
+    model_output_seen   INTEGER NOT NULL DEFAULT 0
+                        CHECK(model_output_seen IN (0, 1)),
+    note                TEXT,
+    annotated_at        TEXT NOT NULL
+);
+
+ALTER TABLE extraction_run ADD COLUMN accepted_json TEXT;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -481,6 +525,7 @@ _MIGRATIONS: dict[int, str] = {
     6: _MIGRATION_6,
     7: _MIGRATION_7,
     8: _MIGRATION_8,
+    9: _MIGRATION_9,
 }
 
 

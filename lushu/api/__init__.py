@@ -5,6 +5,8 @@
 """
 
 from .config_routes import router as config_router
+from .gold_routes import eval_router as eval_router
+from .gold_routes import router as gold_router
 from .health import router as health_router
 from .plan_routes import router as plan_router
 from .trip_routes import router as trip_router
@@ -12,6 +14,8 @@ from .workbench_routes import router as workbench_router
 
 __all__ = [
     "config_router",
+    "eval_router",
+    "gold_router",
     "health_router",
     "plan_router",
     "trip_router",

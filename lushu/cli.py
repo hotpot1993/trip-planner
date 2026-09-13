@@ -1,10 +1,10 @@
 """命令行入口。命令名 `ls`（路书）。
 
-M0 阶段提供 `serve`、`init-db`、`doctor`。M3 阶段加入数据链路的子命令。
+M0 阶段提供 `serve`、`init-db`、`doctor`。M3 阶段加入数据链路与评测的子命令。
 
-`eval`（金标准评测）与 M4 的 `booking`、`verify` 还没做，这里**不注册空壳**——
-命令列表应当如实反映能力，而不是列出一堆点了就报错的入口。
-计划中的命令写在 `serve` 帮助的末尾备查。
+M4 的 `booking`、`verify` 还没做，这里**不注册空壳**——命令列表应当如实
+反映能力，而不是列出一堆点了就报错的入口。计划中的命令写在 `serve`
+帮助的末尾备查。
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from pathlib import Path
 from lushu import __version__, config
 
 PLANNED_PIPELINE = """\
-还没做的子命令（M3 余下部分与 M4）：
-  eval gold | run                 金标准标注与提纯质量评测
+还没做的子命令（M4 起）：
   verify scan                     复验到期扫描
   booking seed | lint             预约规则种子库与体检
   poi warm                        按城市预热高德 POI
@@ -50,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_group(sub)
     _register_align(sub)
     _register_pipeline(sub)
+    _register_eval(sub)
 
     args = parser.parse_args(argv)
     if not args.command:
@@ -103,6 +103,11 @@ def _register_extract(sub) -> None:
     run = actions.add_parser("run", help="批量提纯（已成功提纯过的会跳过）")
     run.add_argument("--limit", type=int, default=50, help="本次最多处理几篇，默认 50")
     run.add_argument("--document", action="append", dest="documents", help="只处理指定素材 id")
+    run.add_argument(
+        "--force",
+        action="store_true",
+        help="连提纯过的也重跑（命中缓存不花钱）。用于补齐评测要用的候选载荷",
+    )
     run.set_defaults(_handler=_cmd_extract_run)
 
     stats = actions.add_parser("stats", help="链路各环节的规模")
@@ -143,6 +148,9 @@ def _register_align(sub) -> None:
     show.add_argument("poi_id")
     show.set_defaults(_handler=_cmd_align_show)
 
+    audit = actions.add_parser("audit", help="体检：有没有结论挂到了子点上（违反 ADR-0009）")
+    audit.set_defaults(_handler=_cmd_align_audit)
+
     align.set_defaults(_handler=lambda _args: _usage(align))
 
 
@@ -155,6 +163,33 @@ def _register_pipeline(sub) -> None:
     run.set_defaults(_handler=_cmd_pipeline_run)
 
     pipeline.set_defaults(_handler=lambda _args: _usage(pipeline))
+
+
+def _register_eval(sub) -> None:
+    eval_cmd = sub.add_parser("eval", help="金标准集与评测")
+    actions = eval_cmd.add_subparsers(dest="action")
+
+    gold = actions.add_parser("gold", help="看/改金标准集")
+    gold.add_argument("--document", help="只看这一篇的标注")
+    gold.add_argument("--show", action="store_true", help="显示每篇的标注条目")
+    gold.add_argument("--add", metavar="DOC_ID", help="给某篇加一条标注")
+    gold.add_argument("--quote", help="标注引用的原文片段，必须原样来自正文")
+    gold.add_argument("--polarity", choices=("avoid", "highlight"), help="避坑还是打卡")
+    gold.add_argument("--subject", help="提及名，如「故宫」「兵马俑」")
+    gold.add_argument("--poi", help="这个提及指向的高德 POI id")
+    gold.add_argument("--facet", help="facet，如 queue / entrance / price_diff")
+    gold.add_argument("--remove", metavar="LABEL_ID", help="删掉一条标注")
+    gold.add_argument("--set-poi", metavar="LABEL_ID", help="给已有标注补上它指向的 POI")
+    gold.add_argument("--done", metavar="DOC_ID", help="标记某篇标注完成（可以一条结论都没有）")
+    gold.add_argument("--seen-model", action="store_true", help="标记时声明看过模型输出")
+    gold.set_defaults(_handler=_cmd_eval_gold)
+
+    run = actions.add_parser("run", help="跑评测，报出三个指标")
+    run.add_argument("--document", action="append", dest="documents", help="只评这几篇")
+    run.add_argument("--limit", type=int, default=5, help="每篇最多列几条漏抽/多抽，默认 5")
+    run.set_defaults(_handler=_cmd_eval_run)
+
+    eval_cmd.set_defaults(_handler=lambda _args: _usage(eval_cmd))
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -253,6 +288,174 @@ def _doctor() -> int:
 def _usage(parser: argparse.ArgumentParser) -> int:
     parser.print_help()
     return 2
+
+
+# ─── 金标准集与评测 ──────────────────────────────────────────────
+
+
+def _cmd_eval_gold(args: argparse.Namespace) -> int:
+    """看与改金标准集。"""
+    from datetime import UTC, datetime
+
+    from lushu.services import gold_store as gs
+    from lushu.store import transaction
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+
+    if args.add:
+        if not args.quote or not args.polarity:
+            print("加标注至少要给 --quote 与 --polarity（avoid 或 highlight）")
+            return 2
+        try:
+            with transaction() as conn:
+                row = gs.add_label(
+                    conn=conn,
+                    document_id=args.add,
+                    quote=args.quote,
+                    polarity=args.polarity,
+                    subject_name=args.subject,
+                    expected_poi_id=args.poi,
+                    facet=args.facet,
+                    created_at=now,
+                )
+        except gs.GoldError as exc:
+            print(f"标注没写成：{exc}")
+            return 1
+        print(f"已加标注 {row.label_id}（正文偏移 {row.char_start}-{row.char_end}，{row.verdict}）")
+        print("别忘了最后 ls eval gold --done <素材 id> —— 不标记就不进评测")
+        return 0
+
+    if args.remove:
+        with transaction() as conn:
+            removed = gs.remove_label(conn=conn, label_id=args.remove)
+        print("已删除" if removed else "没有这条标注")
+        return 0 if removed else 1
+
+    if args.set_poi:
+        if not args.poi:
+            print("要给出 --poi（高德 POI id）")
+            return 2
+        with transaction() as conn:
+            row = gs.update_label(
+                conn=conn,
+                label_id=args.set_poi,
+                expected_poi_id=args.poi,
+                set_poi=True,
+                subject_name=args.subject,
+                facet=args.facet,
+            )
+        if row is None:
+            print("没有这条标注")
+            return 1
+        print(f"已把 {row.label_id} 的对齐目标设为 {row.expected_poi_id}")
+        print("对齐准确率靠这个字段才判得出来：没有它，命中的条只能算「判不出」")
+        return 0
+
+    if args.done:
+        with transaction() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM source_document WHERE id = ?", (args.done,)
+            ).fetchone()
+            if exists is None:
+                print(f"没有这篇素材：{args.done}")
+                return 1
+            gs.mark_annotated(
+                conn=conn,
+                document_id=args.done,
+                model_output_seen=args.seen_model,
+                annotated_at=now,
+            )
+        seen = "看过模型输出" if args.seen_model else "盲标"
+        print(f"已记入金标准集（{seen}）")
+        if not args.seen_model:
+            print("盲标是更可信的标法：先自己读完写结论，再拿模型结果对照")
+        return 0
+
+    documents = gs.gold_documents()
+    if not documents:
+        print("库里还没有素材。先 ls ingest paste 导一篇进来")
+        return 0
+
+    stats = gs.gold_stats()
+    print(f"素材 {len(documents)} 篇｜已标注 {stats['documents']} 篇｜标注条目 {stats['labels']} 条")
+    if stats["documents"] < 30:
+        print(f"设计里要的是 30 篇的人工标注集，现在 {stats['documents']} 篇——")
+        print("样本不够时评测数字只能当噪声看，报告里会如实标出来")
+    print()
+
+    for item in documents:
+        mark = "✅" if item.in_gold_set else "  "
+        seen = "（看过模型）" if item.model_output_seen else ""
+        title = (item.title or "(无标题)")[:28]
+        print(
+            f"  {mark} {item.document_id}  {title:<30}"
+            f" 标注 {item.labeled:>3} 条  候选 {item.prediction_count:>3} 条 {seen}"
+        )
+        if args.show or args.document == item.document_id:
+            for row in gs.labels_for_document(item.document_id):
+                subject = row.subject_name or "（未写主体）"
+                poi = f" → {row.expected_poi_id}" if row.expected_poi_id else ""
+                print(f"        [{row.polarity}] {subject}{poi}：{row.quote[:40]}")
+            if item.labeled == 0 and item.in_gold_set:
+                print("        （这篇标完了，一条真结论都没有）")
+
+    print()
+    print("加标注：ls eval gold --add <素材 id> --quote \"原文片段\" --polarity avoid --subject 故宫")
+    return 0
+
+
+def _cmd_eval_run(args: argparse.Namespace) -> int:
+    """跑评测，报出抽取精确率、召回率与对齐准确率。"""
+    from lushu.services.evaluation import run_evaluation
+
+    bundle = run_evaluation(document_ids=args.documents)
+    report = bundle.report
+
+    if not report.sample_size:
+        print("金标准集是空的，没有可评的东西。")
+        print("先标注：ls eval gold 看有哪些素材，ls eval gold --add 加条目")
+        return 1
+
+    stats = bundle.stats
+    print(f"金标准集：{stats['documents']} 篇素材、{stats['labels']} 条人工结论"
+          f"（其中 {stats['blind']} 篇盲标）")
+    if not bundle.ready:
+        print()
+        print("⚠ 样本不足 30 篇，下面这些数字**不足以支撑结论**。")
+        print("  它们能反映「链路是通的」，但一次调优带来的涨跌可能全在噪声里。")
+    print()
+
+    print(f"  抽取召回率    {_pct(report.recall)}"
+          f"   （{report.hits}/{report.gold_total} 条人工结论被抽到）")
+    print(f"  抽取精确率    {_pct(report.precision)}"
+          f"   （抽了 {report.predicted_total} 条，{report.hits} 条对得上）")
+    print(f"  对齐准确率    {_pct(report.alignment_accuracy)}"
+          f"   （判得出来的 {report.judged} 条里错 {report.misaligned} 条）")
+    if report.unaligned:
+        print(f"  另有 {report.unaligned} 条压根没挂上 POI——对排程等于不存在，"
+              f"已计入对齐错误")
+    print()
+
+    for item in report.documents:
+        print(f"  {item.document_id}  召回 {_pct(item.recall)}  精确 {_pct(item.precision)}"
+              f"  对齐 {_pct(item.alignment_accuracy)}"
+              f"  （{item.gold_total} 条人工 / {item.predicted_total} 条预测）")
+        for gold in item.pairing.missed[: args.limit]:
+            print(f"      漏抽：{gold.quote[:50]}")
+        for bad in item.pairing.spurious[: args.limit]:
+            print(f"      多抽：{bad.prediction.subject_name} — {bad.reason}")
+        for prediction, gold in item.pairing.misaligned[: args.limit]:
+            print(f"      挂错：{prediction.subject_name} 挂到 {prediction.poi_id}，"
+                  f"标注期望 {gold.expected_poi_id}")
+
+    print()
+    print("漏抽与多抽的清单是调提示词的直接依据；对齐错误看 ls align list")
+    return 0
+
+
+def _pct(value: float | None) -> str:
+    """比率转百分比。算不出来就写「判不出」，不写 0%——那是两回事。"""
+    return "判不出" if value is None else f"{value:6.1%}"
 
 
 # ─── 导入 ────────────────────────────────────────────────────────
@@ -405,7 +608,9 @@ def _expand_paths(paths: list[Path]) -> list[Path]:
 def _cmd_extract_run(args: argparse.Namespace) -> int:
     from lushu.services.pipeline import extract_documents
 
-    report = extract_documents(document_ids=args.documents, limit=args.limit)
+    report = extract_documents(
+        document_ids=args.documents, limit=args.limit, force=args.force
+    )
 
     print(f"处理 {report.documents} 篇（其中 {report.cached} 篇命中缓存）")
     print(f"模型吐出 {report.candidates} 条候选")
@@ -484,6 +689,38 @@ def _cmd_align_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_align_audit(_args: argparse.Namespace) -> int:
+    """体检：有没有结论或待办挂到了子点上。
+
+    这条检查是金标准集第一次跑起来时逼出来的：评测报「太和殿 挂错」，
+    追下去是旧数据挂在 `故宫博物院-太和殿` 上。`align_pending` 只处理
+    pending 的待办，已解析的不会被重新检查——**对齐算法改进了，
+    旧结论不会跟着变好**。这个命令就是给这种陈旧数据用的。
+    """
+    from lushu.services.evaluation import sub_poi_violations
+
+    violations = sub_poi_violations()
+    if not violations:
+        print("没有挂到子点上的结论或待办，ADR-0009 是干净的")
+        return 0
+
+    claims = [item for item in violations if item.kind == "claim"]
+    tasks = [item for item in violations if item.kind == "task"]
+    print(f"发现 {len(claims)} 条结论、{len(tasks)} 张待办挂在了子点上：")
+    for item in violations:
+        root = f"{item.root_name}（{item.root_id}）" if item.root_id else "（找不到本体）"
+        kind = "结论" if item.kind == "claim" else "待办"
+        print(f"\n  [{kind}] 「{item.subject}」挂在 {item.poi_name}（{item.poi_id}）")
+        print(f"         本体应该是 {root}")
+        print(f"         {item.ref_id}")
+    print()
+    print("ADR-0009 要求结论一律挂本体。要不要挪，得看这条结论说的是子点自己的事")
+    print("（「太和殿要另外买票」）还是整个本体的事——这需要人判断，不自动挪。")
+    print("做法：把这张待办退回 pending 再跑一次 ls align run，")
+    print("旧结论该删的要先删掉（ls align show <poi_id> 能查出来）。")
+    return 1
+
+
 def _cmd_align_show(args: argparse.Namespace) -> int:
     from lushu.services import knowledge_store as ks
 
@@ -545,10 +782,14 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
         print(f"  {key:<18}{stats[key]}")
     print(f"  {'待对齐':<17}{stats['align_pending']}")
     print(f"  {'引文丢弃合计':<15}{stats['extract_dropped']}")
+    print()
+    print("下一步：ls align list 处置对不上的提及；ls eval gold 看金标准集标到哪了")
     return 0
 
 
 def _cmd_stats(_args: argparse.Namespace) -> int:
+    from lushu.services.evaluation import alignment_tally
+    from lushu.services.gold_store import gold_stats
     from lushu.services.pipeline import pipeline_stats
 
     stats = pipeline_stats()
@@ -569,6 +810,18 @@ def _cmd_stats(_args: argparse.Namespace) -> int:
     }
     for key, label in labels.items():
         print(f"  {label:<16}{stats.get(key, 0)}")
+
+    # 金标准集与人工处置的进度放在最后：它们是「链路之外」的两件事，
+    # 但决定了上面这些数字能不能被信任
+    gold = gold_stats()
+    tally = alignment_tally()
+    gap = f"（还差 {30 - gold['documents']} 篇到 30 篇）" if gold["documents"] < 30 else ""
+    print()
+    print(f"  {'金标准集篇数':<14}{gold['documents']}{gap}")
+    print(f"  {'人工标注条目':<14}{gold['labels']}")
+    print(f"  {'盲标篇数':<15}{gold['blind']}（盲标更可信：先自己读完写结论）")
+    discard = f"{tally.discard_ratio:.0%}" if tally.discard_ratio is not None else "判不出"
+    print(f"  {'人工处置待办':<14}{tally.total}（其中判为非地点 {tally.discarded}，占 {discard}）")
     return 0
 
 

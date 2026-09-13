@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from lushu import __version__, config
 from lushu.api import (
     config_router,
+    eval_router,
+    gold_router,
     health_router,
     plan_router,
     trip_router,
@@ -75,6 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(trip_router)
     app.include_router(plan_router)
     app.include_router(workbench_router)
+    app.include_router(gold_router)
+    app.include_router(eval_router)
 
     _register_error_handlers(app)
     _mount_frontend(app)

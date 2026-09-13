@@ -106,6 +106,7 @@ def record_extraction_run(
     input_chars: int | None = None,
     output_chars: int | None = None,
     duration_ms: int | None = None,
+    accepted: list[dict] | None = None,
     status: str = "ok",
     error: str | None = None,
     created_at: str,
@@ -115,13 +116,17 @@ def record_extraction_run(
     这个表的用处是回答「抽了几条、丢了几条、为什么丢」。只报「抽出了几条」
     区分不出「这一篇本来就没内容」与「模型编了引文」——而后者正是设计里
     担心的「无法区分提纯很准与只看到了准的那几条」（第十一节）。
+
+    `accepted` 是引文校验通过的候选全文。留着它是为了让**评测有一个稳定的
+    预测池**：落库的 claim 只是「抽到且对齐上了」的那些，拿它当预测池会把
+    对齐失败算成抽取错误（迁移 9 的注释里写了为什么另外两个地方都不能用）。
     """
     run_id = new_id("er")
     conn.execute(
         "INSERT INTO extraction_run (id, source_document_id, prompt_version, model, "
         "candidate_count, accepted_count, dropped_count, input_chars, output_chars, "
-        "duration_ms, status, error, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "duration_ms, accepted_json, status, error, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             source_document_id,
@@ -133,6 +138,7 @@ def record_extraction_run(
             input_chars,
             output_chars,
             duration_ms,
+            json.dumps(accepted, ensure_ascii=False) if accepted is not None else None,
             status,
             error,
             created_at,

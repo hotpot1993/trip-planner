@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +288,41 @@ class TestExtractDocuments:
         assert first.documents == 1
         assert len(calls) == 1
         assert again.documents == 0
+
+    def test_force_reextracts_and_refreshes_the_payload(self, db: Path, monkeypatch) -> None:
+        """`--force` 重跑一遍，把候选载荷补上。
+
+        迁移 9 之前跑的篇在 `extraction_run.accepted_json` 上是空的，而评测
+        要靠它当预测池。重跑**不花钱**（`llm_cache` 命中），所以这是补齐老数据
+        的正路——评测那边从待办与证据行捡回来的兜底终究会漏掉个别候选。
+        """
+        self._prepare(db, monkeypatch, a_claim())
+        with connect(db) as conn:
+            extract_documents(conn=conn)
+
+        # 抹掉载荷，模拟迁移 9 之前的老行
+        with transaction(db) as conn:
+            conn.execute("UPDATE extraction_run SET accepted_json = NULL")
+
+        with connect(db) as conn:
+            report = extract_documents(conn=conn, force=True)
+            payload = conn.execute(
+                "SELECT accepted_json FROM extraction_run ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()["accepted_json"]
+
+        assert report.documents == 1
+        assert payload is not None
+        assert len(json.loads(payload)) == 1
+
+    def test_force_does_not_duplicate_alignment_tasks(self, db: Path, monkeypatch) -> None:
+        """重跑不该把同一批候选再开一遍待办——`_already_handled` 挡住它。"""
+        self._prepare(db, monkeypatch, a_claim())
+        with connect(db) as conn:
+            extract_documents(conn=conn)
+            extract_documents(conn=conn, force=True)
+            tasks = conn.execute("SELECT COUNT(*) AS n FROM alignment_task").fetchone()["n"]
+
+        assert tasks == 1
 
     def test_llm_failure_is_recorded_not_fatal(self, db: Path, monkeypatch) -> None:
         """一篇素材提纯失败不该中断整批，但要留下失败记录。"""
