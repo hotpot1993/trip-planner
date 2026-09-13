@@ -207,3 +207,116 @@ def build_alert_list(
     # 倒排：放票日越近越靠前；没有放票日的排最后
     alerts.sort(key=lambda a: (a.days_until_release is None, a.days_until_release or 0))
     return alerts
+
+
+# ─── 规则体检 ────────────────────────────────────────────────────
+#
+# 这一节的存在理由只有一条：**预约规则错一个字段，用户就会白跑一趟。**
+# 所以规则的入库门槛要比别的东西高，而且要能被反复检查，而不是靠当初录的人
+# 自觉。体检是纯函数（吃 BookingRule，吐 Finding），这样它既能跑在真实库上，
+# 也能跑在种子文件上——种子还没入库时就应该被查一遍。
+
+
+class Severity(StrEnum):
+    ERROR = "error"  # 这条规则现在会误导用户，必须修
+    WARN = "warn"  # 不致命，但值得看一眼
+
+
+@dataclass(frozen=True)
+class Finding:
+    """体检发现的一处问题。"""
+
+    severity: Severity
+    code: str
+    poi_id: str
+    poi_name: str
+    message: str
+
+    def __str__(self) -> str:
+        mark = "✗" if self.severity is Severity.ERROR else "!"
+        return f"{mark} [{self.code}] {self.poi_name}：{self.message}"
+
+
+# 提前天数超过这个数基本可以断定是录错了
+MAX_PLAUSIBLE_ADVANCE_DAYS = 90
+
+
+def _valid_release_time(value: str | None) -> bool:
+    if value is None:
+        return True
+    if len(value) != 5 or value[2] != ":":
+        return False
+    hours, minutes = value[:2], value[3:]
+    return hours.isdigit() and minutes.isdigit() and 0 <= int(hours) < 24 and 0 <= int(minutes) < 60
+
+
+def lint_rule(rule: BookingRule, *, today: date, poi_name: str | None = None) -> list[Finding]:
+    """检查一条规则。返回它身上的全部问题（可能不止一处）。"""
+    name = poi_name or rule.poi_id
+    found: list[Finding] = []
+
+    def add(severity: Severity, code: str, message: str) -> None:
+        found.append(Finding(severity, code, rule.poi_id, name, message))
+
+    if rule.booking_required:
+        if rule.advance_days is None:
+            add(Severity.ERROR, "no_advance_days", "需要预约却没写提前几天，算不出放票日")
+        elif rule.advance_days > MAX_PLAUSIBLE_ADVANCE_DAYS:
+            add(
+                Severity.ERROR,
+                "implausible_advance_days",
+                f"提前 {rule.advance_days} 天，超过 {MAX_PLAUSIBLE_ADVANCE_DAYS} 天，八成录错了",
+            )
+        if not rule.channels:
+            add(Severity.ERROR, "no_channel", "知道要预约却无处可去：必须给出预约渠道")
+    elif rule.advance_days is not None:
+        add(
+            Severity.WARN,
+            "advance_days_without_required",
+            f"标了不需要预约，却填了提前 {rule.advance_days} 天",
+        )
+
+    if not _valid_release_time(rule.release_time):
+        add(
+            Severity.ERROR,
+            "bad_release_time",
+            f"放票时点「{rule.release_time}」不是 HH:MM，用户会按错的时刻去等",
+        )
+
+    if rule.status is RuleStatus.REVIEWED:
+        if not rule.evidence_url:
+            add(Severity.ERROR, "reviewed_without_evidence", "已复核却没有来源链接")
+        if rule.reviewed_at is None:
+            add(Severity.ERROR, "reviewed_without_date", "已复核却没记复核日期，算不出复验到期")
+        elif rule.is_due_for_review(today):
+            add(
+                Severity.WARN,
+                "review_overdue",
+                f"复验已到期（{rule.verify_due_at}），规则可能已经变了",
+            )
+    elif rule.evidence_url and rule.reviewed_at is not None:
+        add(
+            Severity.WARN,
+            "draft_but_ready",
+            "材料齐了（有来源、有复核日期）却还是草案状态，复核一下就可用",
+        )
+
+    if rule.booking_required and rule.requires_real_name is None:
+        add(Severity.WARN, "unknown_real_name", "没写是否实名制，用户到了门口可能进不去")
+
+    return found
+
+
+def lint_rules(
+    rules: Iterable[BookingRule],
+    *,
+    today: date,
+    names: dict[str, str] | None = None,
+) -> list[Finding]:
+    """体检一批规则。错误排在前面——它决定这批规则能不能放出去。"""
+    table = names or {}
+    found: list[Finding] = []
+    for rule in rules:
+        found.extend(lint_rule(rule, today=today, poi_name=table.get(rule.poi_id)))
+    found.sort(key=lambda item: (item.severity is not Severity.ERROR, item.poi_id))
+    return found

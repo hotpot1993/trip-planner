@@ -16,9 +16,8 @@ from pathlib import Path
 from lushu import __version__, config
 
 PLANNED_PIPELINE = """\
-还没做的子命令（M4 起）：
+还没做的子命令（M7 起）：
   verify scan                     复验到期扫描
-  booking seed | lint             预约规则种子库与体检
   poi warm                        按城市预热高德 POI
 """
 
@@ -50,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_align(sub)
     _register_pipeline(sub)
     _register_eval(sub)
+    _register_booking(sub)
 
     args = parser.parse_args(argv)
     if not args.command:
@@ -192,6 +192,35 @@ def _register_eval(sub) -> None:
     eval_cmd.set_defaults(_handler=lambda _args: _usage(eval_cmd))
 
 
+def _register_booking(sub) -> None:
+    booking = sub.add_parser("booking", help="预约规则：种子库、复核与体检")
+    actions = booking.add_subparsers(dest="action")
+
+    list_cmd = actions.add_parser("list", help="看规则库现状")
+    list_cmd.set_defaults(_handler=_cmd_booking_list)
+
+    lint = actions.add_parser("lint", help="体检：哪些规则会误导用户")
+    lint.add_argument(
+        "--seed", action="store_true", help="体检种子文件本身（不需要网络与数据库）"
+    )
+    lint.add_argument("--strict", action="store_true", help="有 error 时返回非零")
+    lint.set_defaults(_handler=_cmd_booking_lint)
+
+    seed = actions.add_parser("seed", help="把种子文件写进库里（要对齐实体）")
+    seed.add_argument("--file", type=Path, help="种子文件路径，默认用包内的那份")
+    seed.add_argument("--only", action="append", dest="only", help="只处理指定景点名")
+    seed.add_argument("--dry-run", action="store_true", help="只体检种子，不写库、不联网")
+    seed.set_defaults(_handler=_cmd_booking_seed)
+
+    review = actions.add_parser("review", help="复核一条规则，让它对用户可见")
+    review.add_argument("poi_id")
+    review.add_argument("--evidence", help="来源链接，不给就用种子里的")
+    review.add_argument("--note", help="复核备注")
+    review.set_defaults(_handler=_cmd_booking_review)
+
+    booking.set_defaults(_handler=lambda _args: _usage(booking))
+
+
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -283,6 +312,166 @@ def _doctor() -> int:
     print()
     print("自检通过。" if ok else "自检发现问题，见上。")
     return 0 if ok else 1
+
+
+# ─── 预约规则 ────────────────────────────────────────────────────
+
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _cmd_booking_list(_args: argparse.Namespace) -> int:
+    from lushu.services.booking_store import all_rules, poi_names, rule_stats
+
+    stats = rule_stats()
+    print(f"规则 {stats['total']} 条｜已复核 {stats['reviewed']} 条"
+          f"｜其中需要预约 {stats['required']} 条")
+    # 验收条件看的就是这一行
+    target = 20
+    if stats["reviewed"] >= target:
+        print(f"已达 M4 的验收条件（{target} 至 30 个景点的规则已复核并可用）")
+    else:
+        print(f"M4 的验收条件是 20 至 30 个景点已复核，现在 {stats['reviewed']} 个")
+    print()
+
+    rules = all_rules()
+    if not rules:
+        print("规则库是空的。先跑 ls booking seed 把种子写进来")
+        return 0
+
+    names = poi_names()
+    for rule in sorted(rules, key=lambda item: (item.status.value, item.poi_id)):
+        mark = "✅" if rule.status.value == "reviewed" else "  "
+        label = names.get(rule.poi_id, rule.poi_id)
+        days = f"提前 {rule.advance_days} 天" if rule.advance_days is not None else "提前天数未填"
+        at = f" {rule.release_time}" if rule.release_time else ""
+        who = f"· {len(rule.channels)} 个渠道" if rule.channels else "· 没有渠道"
+        print(f"  {mark} {label:<22}{days}{at}  {who}")
+        if rule.closed_days.weekdays:
+            closed = "、".join(_WEEKDAYS[day] for day in rule.closed_days.weekdays)
+            print(f"       闭馆：{closed}")
+        if rule.status.value == "draft":
+            print("       （草案：不对用户可见，ls booking review 之后才生效）")
+    return 0
+
+
+def _cmd_booking_lint(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from lushu.services import booking_store as bs
+
+    if args.seed:
+        entries = bs.load_seed()
+        findings = bs.lint_seed(entries, today=date.today())
+        print(f"体检种子文件：{len(entries)} 条")
+    else:
+        findings = bs.lint_database()
+        print(f"体检库里的规则：{bs.rule_stats()['total']} 条")
+
+    if not findings:
+        print()
+        print("没有发现问题。")
+        return 0
+
+    errors = [item for item in findings if item.severity.value == "error"]
+    warnings = [item for item in findings if item.severity.value != "error"]
+    print()
+    for item in errors + warnings:
+        print(f"  {item}")
+    print()
+    print(f"错误 {len(errors)} 处，提醒 {len(warnings)} 处")
+    if errors:
+        print()
+        print("错误必须修：预约规则错一个字段，用户就会白跑一趟。")
+        print("有错误的规则复核不过（ls booking review 会拒绝），也就不会对用户可见。")
+    return 1 if (errors and args.strict) else 0
+
+
+def _cmd_booking_seed(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from lushu.services import booking_store as bs
+
+    try:
+        entries = bs.load_seed(args.file)
+    except bs.SeedError as exc:
+        print(f"种子文件有问题：{exc}")
+        return 1
+
+    if args.only:
+        wanted = set(args.only)
+        entries = [item for item in entries if item.name in wanted]
+        if not entries:
+            print(f"种子里没有这些景点：{'、'.join(sorted(wanted))}")
+            return 1
+
+    if args.dry_run:
+        findings = bs.lint_seed(entries, today=date.today())
+        print(f"种子 {len(entries)} 条，只体检不写库：")
+        for item in findings:
+            print(f"  {item}")
+        if not findings:
+            print("  没有发现问题")
+        return 0
+
+    print(f"把 {len(entries)} 条种子写进库里，每条都要先在高德对上实体……")
+    report = bs.seed_rules(entries=entries)
+    print()
+    print(f"对上实体并写入 {report.written} 条（共 {report.total} 条）")
+    if report.failed:
+        print(f"没写进去 {len(report.failed)} 条：")
+        for name, why in report.failed:
+            print(f"  {name}：{why}")
+    if report.errors:
+        print()
+        print(f"种子本身有 {len(report.errors)} 处错误（不影响入库，但复核会被拒）：")
+        for item in report.errors:
+            print(f"  {item}")
+    print()
+    print("写进去的都是**草案**状态，不对用户可见。")
+    print("复核：ls booking review <poi_id> --evidence <来源链接>")
+    return 0 if report.written else 1
+
+
+def _cmd_booking_review(args: argparse.Namespace) -> int:
+    from lushu.services import booking_store as bs
+    from lushu.store import transaction
+
+    rule = bs.get_rule(args.poi_id)
+    if rule is None:
+        print(f"没有这条规则：{args.poi_id}")
+        return 1
+
+    with transaction() as conn:
+        ok = bs.review_rule(
+            conn=conn,
+            poi_id=args.poi_id,
+            evidence_url=args.evidence,
+            note=args.note,
+        )
+
+    if not ok:
+        # 门禁拦下了：把原因说出来，别只说一句「不行」
+        from datetime import date
+
+        from lushu.domain.booking import Severity, lint_rule
+
+        candidate = bs.get_rule(args.poi_id)
+        problems = [
+            item
+            for item in lint_rule(candidate, today=date.today())  # type: ignore[arg-type]
+            if item.severity is Severity.ERROR
+        ]
+        print("复核没过。这条规则现在放出去会误导用户：")
+        for item in problems:
+            print(f"  {item}")
+        if not problems and not (args.evidence or rule.evidence_url):
+            print("  ✗ [no_evidence] 没有来源链接：预约规则必须有据可查")
+        print()
+        print("先补材料（ls booking seed 或直接改种子文件），再复核")
+        return 1
+
+    print(f"已复核 {args.poi_id}，复验到期 {bs.get_rule(args.poi_id).verify_due_at}")  # type: ignore[union-attr]
+    return 0
 
 
 def _usage(parser: argparse.ArgumentParser) -> int:
