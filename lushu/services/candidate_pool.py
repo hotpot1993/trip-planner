@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from lushu.adapters.poi import PoiSearchError
 from lushu.domain.knowledge import Confidence, Polarity
@@ -285,7 +285,6 @@ def pool_pois(
     *,
     conn: sqlite3.Connection | None = None,
     limit: int = 60,
-    fetch=None,
 ) -> list[CandidatePoi]:
     """一座城市候选池里的地方，交给规划引擎用。
 
@@ -297,9 +296,23 @@ def pool_pois(
     引擎给的是城市名，所以先做一次名字 → adcode 的翻译；翻译不出来
     （城市还没进过库）就返回空，调用方据此走纯高德搜索。
 
-    最后会**补一次缺失的评分**（见 `_fill_ratings`）：引擎的景点搜索之后有一道
-    「评分缺失视为不达标」的门禁，池子里没评分的地方会被它丢掉——夫子庙就是
-    这样一个。补的是高德自己的评分，不是我们编的数。
+    **这条路上一次网都不打。** 这里原先会给没有评分的地方补一次高德详情
+    （每次规划最坏 60 次串行请求），理由是「引擎有一道评分门禁，没评分的地方
+    会被丢掉」。那个理由后来消失了两遍：
+
+    1. `c7bfeb4` 让池子条目**豁免**了评分门禁（见 `engine/pool_search.py`：
+       门禁只作用在「高德补全」那部分）。门禁的意图是滤掉高德搜出来的噪声
+       ——停车场、售票处、上车点——而池子里的地方是网友真的写过的，
+       拿滤噪声的规则去滤已经认定过的条目，是判据用错了对象。
+    2. 就算门禁还在，补的那个数也**到不了引擎**。`to_spot` 优先用高德的原始
+       响应转换，而高德对这类地方给的 `biz_ext.rating` 是空列表（实测夫子庙、
+       洒金桥都是），所以补进 `poi.rating` 列的那个值在 `to_spot` 那里被丢掉。
+
+    两件事加起来：那些请求换不来排程上的任何差别，只换来延迟与配额消耗。
+    缺评分是现状不是错误——`to_spot` 认它，门禁也管不着它。
+
+    要补评分的地方是**城市页**（`pool_for_city(fill=True)` 走 `fill_gaps`），
+    那是显示的需要，而且默认不开：界面首屏不该等一串网络请求。
     """
     adcode = city_adcode_for(city_name, conn=conn)
     if adcode is None:
@@ -312,52 +325,10 @@ def pool_pois(
     owned = conn is None
     active = conn or connect()
     try:
-        pois = _poi_entities([item.poi_id for item in picked], conn=active)
-        return _fill_ratings(pois, conn=active, fetch=fetch)
+        return _poi_entities([item.poi_id for item in picked], conn=active)
     finally:
         if owned:
             active.close()
-
-
-def _fill_ratings(
-    pois: list[CandidatePoi], *, conn: sqlite3.Connection, fetch=None
-) -> list[CandidatePoi]:
-    """给没有评分的地方补上高德的评分，并写回库里。
-
-    为什么这一步不能省：引擎的 `attraction_search_node` 拿到景点清单之后要过
-    一道 `filter_by_rating`，**评分缺失一律视为不达标**。池子里的地方是我们
-    已经认定「有人写过」的，却会因为高德没给评分被那道门禁丢掉——
-    夫子庙正是如此（本库里 11 个池子条目有 2 个没评分）。
-
-    补的是高德接口里那个评分，**不是编一个数**。查不到就保持原样：
-    缺评分是现状，不是错误，不该让一次规划因此挂掉。
-    """
-    missing = [poi for poi in pois if poi.rating is None]
-    if not missing:
-        return pois
-
-    if fetch is None:
-        from lushu.adapters.poi import fetch_poi
-
-        fetch = fetch_poi
-
-    found_ratings: dict[str, float] = {}
-    for poi in missing:
-        try:
-            found = fetch(poi.poi_id)
-        except Exception:  # noqa: BLE001 - 缺评分是现状，不该让规划挂掉
-            continue
-        if found is not None and found.rating is not None:
-            found_ratings[poi.poi_id] = found.rating
-
-    if not found_ratings:
-        return pois
-
-    for poi_id, rating in found_ratings.items():
-        conn.execute("UPDATE poi SET rating = ? WHERE amap_poi_id = ?", (rating, poi_id))
-    conn.commit()
-
-    return [replace(poi, rating=found_ratings.get(poi.poi_id, poi.rating)) for poi in pois]
 
 
 def fill_gaps(

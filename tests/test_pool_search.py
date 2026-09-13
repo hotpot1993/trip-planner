@@ -174,12 +174,22 @@ class TestPoolPois:
         assert [poi.name for poi in found] == ["有人写过的"]
 
 
-class TestRatingFill:
-    """引擎拿到景点清单之后有一道「评分缺失视为不达标」的门禁。
+class TestPlanningPathDoesNotTouchTheNetwork:
+    """排程这条路上**一次网都不打**。
 
-    池子里的地方是我们已经认定「有人写过」的，却会因为高德没给评分被丢掉——
-    夫子庙正是如此。所以交给引擎之前要把缺的评分补上，补的是**高德那个评分**，
-    不是编一个数。
+    这一条原先不是这样。`pool_pois` 会给没有评分的地方补一次高德详情（每个
+    缺评分的地方一次请求，无上限、无节流，串行），理由是「引擎有一道评分门禁，
+    没评分的地方会被丢掉」。那个理由后来消失了两遍：
+
+    1. `c7bfeb4` 让池子条目**豁免**了评分门禁——门禁只作用在「高德补全」那一部分
+       （见下面 `TestTheSearchNode` 里那条「高德那部分照旧受管」）。
+    2. 补的那个数也**到不了引擎**：`to_spot` 优先用高德的原始响应转换，而高德对
+       这类地方给的 `biz_ext.rating` 是空列表（实测夫子庙、洒金桥都是），
+       所以补进 `poi.rating` 列的值在 `to_spot` 那里被丢掉。
+
+    两件事加起来，那些请求换不来排程上的任何差别，只换来延迟与配额消耗——
+    真库里 100 个 POI 有 26 个没评分，换成新城市的池子最坏是 60 次串行请求，
+    而它发生在**每一次规划请求**里。
     """
 
     def _unrated(self, db: Path) -> None:
@@ -187,56 +197,39 @@ class TestRatingFill:
         with transaction(db) as conn:
             conn.execute("UPDATE poi SET rating = NULL WHERE amap_poi_id = 'B_1'")
 
-    def test_fills_the_rating_and_writes_it_back(self, db: Path) -> None:
-        self._unrated(db)
-        asked: list[str] = []
-
-        def fake_fetch(poi_id: str):
-            asked.append(poi_id)
-            return CandidatePoi(poi_id=poi_id, name="夫子庙", rating=4.7)
-
-        found = candidate_pool.pool_pois("南京", conn=connect(db), fetch=fake_fetch)
-
-        assert asked == ["B_1"]
-        assert found[0].rating == 4.7
-        # 写回库里：下次规划不必再查一遍
-        row = connect(db).execute(
-            "SELECT rating FROM poi WHERE amap_poi_id = 'B_1'"
-        ).fetchone()
-        assert row["rating"] == 4.7
-
-    def test_does_not_ask_when_everything_is_rated(self, db: Path) -> None:
-        _poi_with_claim(db, "B_1", "夫子庙")
-
-        def boom(_poi_id: str):
-            raise AssertionError("都有评分了不该再问高德")
-
-        found = candidate_pool.pool_pois("南京", conn=connect(db), fetch=boom)
-
-        assert found[0].rating == 4.8
-
-    def test_a_lookup_failure_keeps_the_pool_intact(self, db: Path) -> None:
-        """**缺评分是现状，不是错误**——不该让一次规划因此挂掉。"""
+    def test_pool_pois_never_calls_amap(self, db: Path, monkeypatch) -> None:
         self._unrated(db)
 
-        def boom(_poi_id: str):
-            raise RuntimeError("INVALID_USER_KEY")
+        def boom(*_args: object, **_kwargs: object):
+            raise AssertionError("规划这条路上不该有任何网络请求")
 
-        found = candidate_pool.pool_pois("南京", conn=connect(db), fetch=boom)
+        monkeypatch.setattr("lushu.adapters.poi.fetch_poi", boom)
+        monkeypatch.setattr("lushu.adapters.poi.search_pois", boom)
+
+        found = candidate_pool.pool_pois("南京", conn=connect(db))
 
         assert [poi.name for poi in found] == ["夫子庙"]
-        assert found[0].rating is None
 
-    def test_a_place_that_still_has_no_rating_is_not_invented(self, db: Path) -> None:
-        """高德也没有评分时保持 None——编一个数比缺一个数糟得多。"""
+    def test_a_missing_rating_is_reported_as_missing(self, db: Path) -> None:
+        """缺评分是现状，不是错误——不补、不编，如实带出去。"""
         self._unrated(db)
 
-        def empty(poi_id: str):
-            return CandidatePoi(poi_id=poi_id, name="夫子庙", rating=None)
-
-        found = candidate_pool.pool_pois("南京", conn=connect(db), fetch=empty)
+        found = candidate_pool.pool_pois("南京", conn=connect(db))
 
         assert found[0].rating is None
+
+    def test_a_place_without_a_rating_is_still_usable(self, db: Path) -> None:
+        """没有评分的地方仍然能变成引擎要的 spot——评分不是必需品。"""
+        from lushu.engine.pool_search import to_spot
+
+        self._unrated(db)
+        poi = candidate_pool.pool_pois("南京", conn=connect(db))[0]
+
+        spot = to_spot(poi)
+
+        assert spot is not None
+        assert spot["name"] == "夫子庙"
+        assert spot["location"]["lat"] == poi.lat_gcj02
 
 
 class TestToSpot:
