@@ -1,7 +1,15 @@
 import { useState, type ReactNode } from 'react'
 
 import { hrefFor } from '@/lib/router'
-import type { DayOut, ItemOut, StayOut, TransferOut } from '@/lib/api'
+import type {
+  DayOut,
+  InsightOut,
+  ItemInsightsOut,
+  ItemOut,
+  StayOut,
+  TransferOut,
+  TripInsightsOut,
+} from '@/lib/api'
 import { kindLabel, monthDay, weekday } from '@/lib/format'
 
 /**
@@ -52,9 +60,12 @@ function buildNodes(stays: StayOut[]): RailNode[] {
 export function RouteRail({
   stays,
   transfers = [],
+  insights,
 }: {
   stays: StayOut[]
   transfers?: TransferOut[]
+  /** 按 POI 分组的软经验。不注入模型，生成后挂载（设计 5.4）。 */
+  insights?: TripInsightsOut
 }) {
   const nodes = buildNodes(stays)
 
@@ -94,6 +105,7 @@ export function RouteRail({
             node={node}
             isLast={index === nodes.length - 1}
             transfers={node.kind === 'day' ? (byDay.get(node.dayIndex) ?? []) : []}
+            insights={insights}
           />
         ))}
       </ol>
@@ -105,10 +117,12 @@ function RailRow({
   node,
   isLast,
   transfers,
+  insights,
 }: {
   node: RailNode
   isLast: boolean
   transfers: TransferOut[]
+  insights?: TripInsightsOut
 }) {
   const hasContent = node.kind === 'day' ? node.day.items.length > 0 || transfers.length > 0 : true
 
@@ -121,7 +135,7 @@ function RailRow({
       {node.kind === 'station' ? (
         <StationBody node={node} />
       ) : (
-        <DayBody day={node.day} transfers={transfers} />
+        <DayBody day={node.day} transfers={transfers} insights={insights} />
       )}
     </li>
   )
@@ -197,7 +211,15 @@ function StationBody({
   )
 }
 
-function DayBody({ day, transfers }: { day: DayOut; transfers: TransferOut[] }) {
+function DayBody({
+  day,
+  transfers,
+  insights,
+}: {
+  day: DayOut
+  transfers: TransferOut[]
+  insights?: TripInsightsOut
+}) {
   const hasItems = day.items.length > 0
 
   return (
@@ -217,7 +239,11 @@ function DayBody({ day, transfers }: { day: DayOut; transfers: TransferOut[] }) 
       {hasItems ? (
         <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
           {day.items.map((item, i) => (
-            <ItemRow key={`${day.date}-${i}`} item={item} />
+            <ItemRow
+              key={`${day.date}-${i}`}
+              item={item}
+              insights={item.poi_id ? insights?.by_poi[item.poi_id] : undefined}
+            />
           ))}
         </ul>
       ) : transfers.length === 0 ? (
@@ -327,42 +353,109 @@ function modeLabel(mode: string): string {
   }
 }
 
-function ItemRow({ item }: { item: ItemOut }) {
+function ItemRow({ item, insights }: { item: ItemOut; insights?: ItemInsightsOut }) {
+  const [open, setOpen] = useState(false)
+
   // 景点没有实体主键，说明它还没对上高德 POI（ADR-0002），要么是待对齐、
   // 要么是待补坐标。这个状态必须让人看见，否则知识永远挂不上去。
   const awaitingAlignment = item.kind === 'poi' && !item.poi_id
+  const hasInsights = Boolean(insights && (insights.highlights.length || insights.avoids.length))
 
   return (
-    <li className="flex items-baseline gap-x-3 text-sm">
-      <span className="data w-11 shrink-0 text-ink-3">{item.start_time ?? '——'}</span>
+    <li className="text-sm">
+      <div className="flex items-baseline gap-x-3">
+        <span className="data w-11 shrink-0 text-ink-3">{item.start_time ?? '——'}</span>
 
-      {/* 时间轴要的是可扫读：地址单行截断，悬停看全文。
-          高德的地址常带「(地铁站步行X分钟)」这类长后缀，任它折行会把节奏打散。 */}
-      <span className="flex min-w-0 flex-1 items-baseline gap-x-2">
-        <span className="shrink-0">{item.title}</span>
-        {item.address ? (
-          <span className="truncate text-xs text-ink-3" title={item.address}>
-            {item.address}
+        {/* 时间轴要的是可扫读：地址单行截断，悬停看全文。
+            高德的地址常带「(地铁站步行X分钟)」这类长后缀，任它折行会把节奏打散。 */}
+        <span className="flex min-w-0 flex-1 items-baseline gap-x-2">
+          <span className="shrink-0">{item.title}</span>
+          {item.address ? (
+            <span className="truncate text-xs text-ink-3" title={item.address}>
+              {item.address}
+            </span>
+          ) : null}
+        </span>
+
+        {/* 软经验**不进正文**：整段攻略铺进时间轴，扫读就没了。
+            所以这里是「几个标记 + 展开」——数量看得见，原文点开才读。 */}
+        {hasInsights ? (
+          <button
+            type="button"
+            onClick={() => setOpen((value) => !value)}
+            aria-expanded={open}
+            className="shrink-0 rounded border border-rule px-1.5 py-0.5 text-[11px] text-ink-2 hover:border-azurite"
+            title="网友对这个地方说过的话"
+          >
+            {insights!.avoids.length ? (
+              <span className="text-azurite">{insights!.avoids.length} 避坑</span>
+            ) : null}
+            {insights!.avoids.length && insights!.highlights.length ? ' · ' : ''}
+            {insights!.highlights.length ? (
+              <span className="text-malachite">{insights!.highlights.length} 打卡</span>
+            ) : null}
+          </button>
+        ) : null}
+
+        {item.rating !== null ? (
+          <span className="data shrink-0 text-xs text-ink-3">{item.rating.toFixed(1)}</span>
+        ) : null}
+
+        {awaitingAlignment ? (
+          <span
+            className="shrink-0 rounded-sm bg-cinnabar-soft px-1.5 py-0.5 text-xs text-cinnabar"
+            title="这个景点还没对上实体真源，因此暂时挂不上攻略知识"
+          >
+            待对齐
           </span>
         ) : null}
-      </span>
 
-      {item.rating !== null ? (
-        <span className="data shrink-0 text-xs text-ink-3">{item.rating.toFixed(1)}</span>
-      ) : null}
+        {item.kind !== 'poi' ? (
+          <span className="shrink-0 text-xs text-ink-3">{kindLabel(item.kind)}</span>
+        ) : null}
+      </div>
 
-      {awaitingAlignment ? (
-        <span
-          className="shrink-0 rounded-sm bg-cinnabar-soft px-1.5 py-0.5 text-xs text-cinnabar"
-          title="这个景点还没对上实体真源，因此暂时挂不上攻略知识"
-        >
-          待对齐
-        </span>
-      ) : null}
-
-      {item.kind !== 'poi' ? (
-        <span className="shrink-0 text-xs text-ink-3">{kindLabel(item.kind)}</span>
-      ) : null}
+      {open && insights ? <InsightList insights={insights} /> : null}
     </li>
+  )
+}
+
+/**
+ * 展开之后的原文。
+ *
+ * **原文照登，不改一个字**——这些是网友说过的话，任何转述都会让它
+ * 从「证据」变成「我们的说法」。置信度跟着每条一起显示：
+ * 「3 个独立来源」与「待验证的个例」是这份攻略可信度的全部依据。
+ */
+function InsightList({ insights }: { insights: ItemInsightsOut }) {
+  const groups: [string, InsightOut[], string][] = [
+    ['避坑', insights.avoids, 'border-azurite text-azurite'],
+    ['打卡', insights.highlights, 'border-malachite text-malachite'],
+  ]
+  return (
+    <div className="mt-1.5 ml-14 space-y-2">
+      {groups.map(([title, claims, tone]) =>
+        claims.length ? (
+          <div key={title}>
+            <p className={`text-[11px] ${tone.split(' ')[1]}`}>{title}</p>
+            <ul className="mt-0.5 space-y-1">
+              {claims.map((claim) => (
+                <li
+                  key={claim.claim_id}
+                  className={`border-l-2 pl-2.5 ${tone.split(' ')[0]}`}
+                >
+                  <p className="text-[13px] leading-relaxed text-ink-2">{claim.text}</p>
+                  <p className="data mt-0.5 text-[10px] text-ink-3">
+                    {claim.single_source
+                      ? '待验证的个例（只有 1 个来源）'
+                      : `${claim.independent_source_count} 个独立来源`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null,
+      )}
+    </div>
   )
 }

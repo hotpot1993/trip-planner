@@ -8,11 +8,13 @@ import {
   ApiError,
   confirmTrip,
   deleteTrip,
+  fetchTripInsights,
   fetchTripWeather,
   getTrip,
   refreshTransfers,
   updateStays,
   type TripDetailOut,
+  type TripInsightsOut,
   type TripWeatherOut,
 } from '@/lib/api'
 import { dateRange, shortStamp } from '@/lib/format'
@@ -26,6 +28,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
   const [weather, setWeather] = useState<TripWeatherOut | null>(null)
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherError, setWeatherError] = useState<string | null>(null)
+  const [insights, setInsights] = useState<TripInsightsOut | null>(null)
 
   const reload = useCallback(() => {
     setError(null)
@@ -35,6 +38,11 @@ export function TripDetail({ tripId }: { tripId: string }) {
         setTrip(null)
         setError(cause instanceof Error ? cause.message : String(cause))
       })
+    // 软经验与行程分开取：它是知识库的内容，会随复核与重新对齐变化，
+    // 不该让一次行程读取依赖整个知识库
+    fetchTripInsights(tripId)
+      .then(setInsights)
+      .catch(() => setInsights(null))
   }, [tripId])
 
   useEffect(reload, [reload])
@@ -85,7 +93,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
           实心圆点是已经排好的天，空心是还没安排的。总天数由各城市停留天数相加得出。
           城际转移画在它落到的那一天里。
         </p>
-        <RouteRail stays={trip.stays} transfers={trip.transfers} />
+        <RouteRail stays={trip.stays} transfers={trip.transfers} insights={insights ?? undefined} />
       </section>
 
       <BudgetPanel budget={trip.budget} />

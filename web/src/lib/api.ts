@@ -298,6 +298,38 @@ export const fetchTripWeather = (tripId: string): Promise<TripWeatherOut> =>
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)
 
+// ─── 行程上的软经验 ──────────────────────────────────────────
+
+export interface InsightOut {
+  claim_id: string
+  text: string
+  facet: string
+  confidence: 'high' | 'single_source'
+  independent_source_count: number
+  evidence_count: number
+  verify_due_at: string | null
+  /** 单源的说法照样显示，但要让用户看得出它是单源。 */
+  single_source: boolean
+}
+
+export interface ItemInsightsOut {
+  poi_id: string
+  poi_name: string
+  highlights: InsightOut[]
+  avoids: InsightOut[]
+}
+
+export interface TripInsightsOut {
+  trip_id: string
+  by_poi: Record<string, ItemInsightsOut>
+  covered_items: number
+  total_claims: number
+}
+
+/** 软经验不注入模型，生成后挂载（设计 5.4）。所以它与行程详情分开取。 */
+export const fetchTripInsights = (tripId: string): Promise<TripInsightsOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/insights`)
+
 // ─── 预约 ────────────────────────────────────────────────────
 
 export interface BookingChannelOut {

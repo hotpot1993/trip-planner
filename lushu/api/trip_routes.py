@@ -541,6 +541,81 @@ async def trip_weather(trip_id: str) -> TripWeatherOut:
     )
 
 
+class TripInsightsOut(BaseModel):
+    """行程上挂着的软经验，按 POI 分组。
+
+    **与行程详情分开一个接口**：软经验是知识库的内容，行程是自有数据，
+    两者的读取时机不同（知识库会随复核与重新对齐变化）。
+    混进详情响应里，会让一次行程读取依赖整个知识库。
+    """
+
+    trip_id: str
+    by_poi: dict[str, ItemInsightsOut]
+    covered_items: int
+    total_claims: int
+
+
+class InsightOut(BaseModel):
+    claim_id: str
+    text: str
+    facet: str
+    confidence: str
+    independent_source_count: int
+    evidence_count: int
+    verify_due_at: str | None
+    single_source: bool
+
+
+class ItemInsightsOut(BaseModel):
+    poi_id: str
+    poi_name: str
+    highlights: list[InsightOut]
+    avoids: list[InsightOut]
+
+
+@router.get("/trips/{trip_id}/insights", response_model=TripInsightsOut, summary="行程上的软经验")
+def trip_insights(trip_id: str) -> TripInsightsOut:
+    """把知识库里挂在这份行程各个景点上的结论取出来。
+
+    设计 5.4：**软经验不注入 prompt，生成后挂载**。模型没见过这些文字，
+    也就编不出「我在故宫拍到了没人的太和殿」。
+    """
+    from lushu.services import trip_insights as insights_service
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    data = insights_service.insights_for_trip(trip_id)
+
+    def one(item) -> InsightOut:
+        return InsightOut(
+            claim_id=item.claim_id,
+            text=item.text,
+            facet=item.facet,
+            confidence=item.confidence,
+            independent_source_count=item.independent_source_count,
+            evidence_count=item.evidence_count,
+            verify_due_at=item.verify_due_at,
+            single_source=item.single_source,
+        )
+
+    return TripInsightsOut(
+        trip_id=trip_id,
+        by_poi={
+            poi_id: ItemInsightsOut(
+                poi_id=item.poi_id,
+                poi_name=item.poi_name,
+                highlights=[one(claim) for claim in item.highlights],
+                avoids=[one(claim) for claim in item.avoids],
+            )
+            for poi_id, item in data.by_poi.items()
+        },
+        covered_items=data.covered_items,
+        total_claims=data.total_claims,
+    )
+
+
 @router.get("/trips/{trip_id}/booking", response_model=TripBookingOut, summary="预约清单")
 def trip_booking(
     trip_id: str, today: Annotated[date | None, Query()] = None
