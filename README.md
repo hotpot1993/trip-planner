@@ -23,6 +23,7 @@
 | M4 预约子系统 | 规则种子库、复核门禁、体检、行程页预约清单 | **可用**，22/20 条规则（日历导出已放弃，见下） |
 | M5 候选池接入 | 攻略知识库优先加高德补全 | **可用**，覆盖可查；排程接入未做 |
 | M6 路书导出 | 单文件 HTML、导航深链、契约校验 | **完成**，真机验过（飞行模式打开正常） |
+| 部署 | Docker 镜像、飞牛 NAS | **文件就绪**，镜像尚未构建（本机没装 Docker） |
 
 M1 的验收条件「从对话到可编辑行程跑通一座城市」已用真实数据验证：一句话需求
 经 12 个阶段（意图识别 → 高德搜景点 → 规划⇄评审两轮 → 开放时间核查 → 餐饮 →
@@ -177,6 +178,18 @@ pnpm install
 pnpm dev
 ```
 
+### 用 Docker 跑（含飞牛 NAS）
+
+```bash
+docker build -t <账号>/lushu:latest .
+docker compose up -d          # 改 docker-compose.yml 里的 Key 与数据目录
+```
+
+镜像里既没有 Key 也没有行程数据，两样都在运行时给：Key 走环境变量，
+库与素材走挂载卷。构建、推送 Docker Hub、飞牛 NAS 上拉起来的完整步骤，
+以及「在 NAS 上构建会缺 `data/rail_stations.json`」这类坑，
+见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
 ---
 
 ## 目录结构
@@ -196,6 +209,10 @@ web/                      前端（Vite + React + TypeScript）
 tests/                    测试，含架构边界测试
 docs/                     设计文档与决策记录
 data/                     本地数据（不进版本库）
+
+Dockerfile                镜像构建：第一段用 Node 出前端，第二段只有 Python
+docker-compose.yml        飞牛 NAS 的容器应用里直接粘这份
+deploy/entrypoint.sh      启动前把车站名表补进数据目录
 ```
 
 依赖方向固定为 `api → services → domain → adapters → store`，反向依赖由 `tests/test_architecture_boundaries.py` 拦截。
@@ -212,4 +229,5 @@ data/                     本地数据（不进版本库）
 - [`docs/M4-STATUS.md`](docs/M4-STATUS.md) —— M4 的进度，含规则数据本身逼出来的四处设计修正
 - [`docs/M5-STATUS.md`](docs/M5-STATUS.md) —— M5 候选池：城市页、软经验挂载，以及两个用户可见的缺陷
 - [`docs/M6-STATUS.md`](docs/M6-STATUS.md) —— M6 路书导出的契约层，以及 `travel-plan-viz` 复用未落地这件事
+- [`docs/DEPLOY.md`](docs/DEPLOY.md) —— 镜像怎么构建与推送、飞牛 NAS 上怎么拉起来、哪些是构建前验证过的、哪些没有
 - [`docs/adr/`](docs/adr/) —— 架构决策记录
