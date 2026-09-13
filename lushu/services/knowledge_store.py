@@ -742,3 +742,82 @@ def alignment_stats(*, conn: sqlite3.Connection | None = None) -> dict[str, int]
         "resolved": counts.get(ALIGN_STATUS_RESOLVED, 0),
         "discarded": counts.get(ALIGN_STATUS_DISCARDED, 0),
     }
+
+
+@dataclass(frozen=True)
+class PoiRow:
+    """库里已有的一个 POI。"""
+
+    poi_id: str
+    name: str
+    city_name: str | None
+    parent_id: str | None
+    parent_name: str | None
+    typecode: str | None
+    address: str | None
+
+    @property
+    def is_root(self) -> bool:
+        """本体（`parent` 为空）还是子点。标注时该选本体（ADR-0009）。"""
+        return not self.parent_id
+
+    @property
+    def label(self) -> str:
+        """给人看的一行。子点要带上它的本体，否则选不出该选哪个。"""
+        if self.parent_name:
+            return f"{self.name}（属于 {self.parent_name}）"
+        return self.name
+
+
+def search_local_pois(
+    query: str = "", *, city_adcode: str | None = None, limit: int = 20,
+    conn: sqlite3.Connection | None = None,
+) -> list[PoiRow]:
+    """在**库里已有的** POI 里按名称找。
+
+    标注金标准时要填「这条提及指的是哪个景点」（`expected_poi_id`），
+    而那个字段应当填**管线能真正产出的实体**——也就是 `poi` 表里有的。
+    去问一次高德会给出更多候选，但也会给出管线当下对不上的候选，
+    这样的金标准会把「对齐准确率」变成一个够不着的指标。
+
+    只做子串匹配，不排序打分：这里是人眼在挑，不是在机器对齐。
+    本体排在子点前面——ADR-0009 要求结论挂本体。
+    """
+    owned = conn is None
+    active = conn or connect()
+    try:
+        clauses = []
+        params: list[object] = []
+        if query.strip():
+            clauses.append("p.name LIKE ?")
+            params.append(f"%{query.strip()}%")
+        if city_adcode:
+            clauses.append("p.city_adcode = ?")
+            params.append(city_adcode)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        rows = active.execute(
+            "SELECT p.amap_poi_id, p.name, c.name AS city_name, p.parent_poi_id, "
+            "  r.name AS parent_name, p.typecode, p.address "
+            "FROM poi p LEFT JOIN city c ON c.adcode = p.city_adcode "
+            "LEFT JOIN poi r ON r.amap_poi_id = p.parent_poi_id "
+            f"{where} "
+            "ORDER BY (p.parent_poi_id IS NOT NULL), p.name LIMIT ?",
+            params,
+        ).fetchall()
+    finally:
+        if owned:
+            active.close()
+
+    return [
+        PoiRow(
+            poi_id=row["amap_poi_id"],
+            name=row["name"],
+            city_name=row["city_name"],
+            parent_id=row["parent_poi_id"],
+            parent_name=row["parent_name"],
+            typecode=row["typecode"],
+            address=row["address"],
+        )
+        for row in rows
+    ]

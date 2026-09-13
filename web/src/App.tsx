@@ -4,20 +4,30 @@ import { hrefFor, useRoute } from '@/lib/router'
 import { Status } from '@/views/Status'
 import { TripDetail } from '@/views/TripDetail'
 import { TripList } from '@/views/TripList'
+import { Workbench } from '@/views/Workbench'
 
 export default function App() {
   const route = useRoute()
+  const wide = route.name === 'workbench'
 
   return (
     <div className="min-h-dvh">
       <header className="border-b border-rule">
-        <div className="mx-auto flex max-w-3xl flex-wrap items-baseline gap-x-6 gap-y-2 px-6 py-5">
+        <div
+          className={[
+            'mx-auto flex flex-wrap items-baseline gap-x-6 gap-y-2 px-6 py-5',
+            wide ? 'max-w-6xl' : 'max-w-3xl',
+          ].join(' ')}
+        >
           <a href={hrefFor({ name: 'trips' })} className="no-underline">
             <span className="font-display text-2xl tracking-wide text-ink">路书</span>
           </a>
           <nav className="flex gap-x-4 text-sm">
-            <NavLink href={hrefFor({ name: 'trips' })} active={route.name !== 'status'}>
+            <NavLink href={hrefFor({ name: 'trips' })} active={route.name !== 'status' && !wide}>
               行程
+            </NavLink>
+            <NavLink href={hrefFor({ name: 'workbench', tab: 'annotate' })} active={wide}>
+              数据工作台
             </NavLink>
             <NavLink href={hrefFor({ name: 'status' })} active={route.name === 'status'}>
               运行状态
@@ -26,13 +36,24 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-6 py-8">
+      <main
+        className={[
+          'mx-auto px-6 py-8',
+          wide ? 'max-w-6xl' : 'max-w-3xl',
+        ].join(' ')}
+      >
         {route.name === 'trips' ? <TripList /> : null}
         {route.name === 'trip' ? <TripDetail tripId={route.tripId} /> : null}
+        {route.name === 'workbench' ? <Workbench tab={route.tab} /> : null}
         {route.name === 'status' ? <Status /> : null}
       </main>
 
-      <footer className="mx-auto max-w-3xl px-6 pb-10 text-xs leading-relaxed text-ink-3">
+      <footer
+        className={[
+          'mx-auto px-6 pb-10 text-xs leading-relaxed text-ink-3',
+          wide ? 'max-w-6xl' : 'max-w-3xl',
+        ].join(' ')}
+      >
         本地优先的旅行攻略规划工具。多城市规划是骨架，攻略提纯与景点预约是挂在它上面的信息层。
       </footer>
     </div>

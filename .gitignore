@@ -34,3 +34,6 @@ Thumbs.db
 /collect.txt
 /pytest_out.txt
 /poi_dump.txt
+
+# 界面截图的临时落点（用 scripts/shot.mjs 生成，不进版本库）
+.shots/

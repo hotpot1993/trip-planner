@@ -417,3 +417,65 @@ class TestClaimsEndpoint:
 
     def test_invalid_confidence_is_rejected(self, client: TestClient) -> None:
         assert client.get("/api/workbench/claims?confidence=差不多吧").status_code == 422
+
+
+class TestLocalPois:
+    """标注金标准时要填 `expected_poi_id`，候选只能来自**库里已有的**实体。
+
+    去问一次高德会给更多候选，但也会给出管线当下对不上的，那样的金标准
+    会把对齐准确率变成一个够不着的指标。
+    """
+
+    def _seed(self, client: TestClient) -> None:
+        from lushu.store import connect as real_connect
+
+        conn = real_connect()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO city (adcode, name, updated_at) "
+                    "VALUES ('110100', '北京', '2026-09-12')"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, "
+                    "typecode, lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                    "('B_R', '故宫博物院', '110100', '110101', '110201', 39.918, 116.397, "
+                    "'2026-09-12')"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO poi (amap_poi_id, name, city_adcode, adcode, "
+                    "typecode, parent_poi_id, lat_gcj02, lng_gcj02, fetched_at) VALUES "
+                    "('B_S', '故宫博物院-太和殿', '110100', '110101', '110200', 'B_R', "
+                    "39.916, 116.397, '2026-09-12')"
+                )
+        finally:
+            conn.close()
+
+    def test_search_returns_matches(self, client: TestClient) -> None:
+        self._seed(client)
+        rows = client.get("/api/workbench/pois?q=故宫").json()
+        assert {row["poi_id"] for row in rows} == {"B_R", "B_S"}
+
+    def test_root_comes_before_sub_poi(self, client: TestClient) -> None:
+        """本体排在子点前面：ADR-0009 要求结论挂本体，排序要帮着人选对。"""
+        self._seed(client)
+        rows = client.get("/api/workbench/pois?q=故宫").json()
+        assert rows[0]["is_root"] is True
+        assert rows[0]["poi_id"] == "B_R"
+
+    def test_sub_poi_label_names_its_root(self, client: TestClient) -> None:
+        """子点要带上本体，否则人选不出该选哪个。"""
+        self._seed(client)
+        rows = client.get("/api/workbench/pois?q=太和殿").json()
+        assert rows[0]["label"] == "故宫博物院-太和殿（属于 故宫博物院）"
+
+    def test_empty_query_lists_everything(self, client: TestClient) -> None:
+        self._seed(client)
+        assert len(client.get("/api/workbench/pois").json()) == 2
+
+    def test_no_match_is_empty_not_an_error(self, client: TestClient) -> None:
+        self._seed(client)
+        assert client.get("/api/workbench/pois?q=不存在的地方").json() == []
+
+    def test_limit_is_validated(self, client: TestClient) -> None:
+        assert client.get("/api/workbench/pois?limit=0").status_code == 422

@@ -353,3 +353,45 @@ def list_extractions(limit: int = Query(default=50, ge=1, le=500)) -> list[Extra
 def workbench_stats() -> PipelineStatsOut:
     """链路概览。工作台首页用它决定「现在该做什么」。"""
     return PipelineStatsOut(**pipeline.pipeline_stats())  # type: ignore[arg-type]
+
+
+class LocalPoiOut(BaseModel):
+    """库里已有的一个 POI。"""
+
+    poi_id: str
+    name: str
+    label: str
+    city_name: str | None
+    parent_id: str | None
+    parent_name: str | None
+    typecode: str | None
+    address: str | None
+    is_root: bool
+
+
+@router.get("/pois", response_model=list[LocalPoiOut])
+def local_pois(
+    q: str = Query(default="", max_length=60),
+    city_adcode: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[LocalPoiOut]:
+    """在库里已有的 POI 里按名称找。
+
+    标注金标准时要填「这条提及指的是哪个景点」，那个字段应当填**管线能真正
+    产出的实体**。去问一次高德会给更多候选，但也会给出管线当下对不上的，
+    那样的金标准会把对齐准确率变成一个够不着的指标。
+    """
+    return [
+        LocalPoiOut(
+            poi_id=row.poi_id,
+            name=row.name,
+            label=row.label,
+            city_name=row.city_name,
+            parent_id=row.parent_id,
+            parent_name=row.parent_name,
+            typecode=row.typecode,
+            address=row.address,
+            is_root=row.is_root,
+        )
+        for row in ks.search_local_pois(q, city_adcode=city_adcode, limit=limit)
+    ]

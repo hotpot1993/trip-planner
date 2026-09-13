@@ -298,6 +298,413 @@ export const fetchTripWeather = (tripId: string): Promise<TripWeatherOut> =>
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)
 
+// ─── 数据工作台 ──────────────────────────────────────────────
+
+export type Polarity = 'avoid' | 'highlight'
+
+export interface GoldDocumentOut {
+  document_id: string
+  title: string | null
+  site: string
+  chars: number
+  prediction_count: number
+  labeled: number
+  in_gold_set: boolean
+  model_output_seen: boolean
+  annotated_at: string | null
+}
+
+export interface GoldLabelOut {
+  label_id: string
+  quote: string
+  polarity: Polarity
+  subject_type: string
+  subject_name: string | null
+  expected_poi_id: string | null
+  facet: string | null
+  char_start: number | null
+  char_end: number | null
+  verdict: string
+  note: string | null
+  created_at: string
+}
+
+/** 模型抽出的一条候选。界面上必须标明「这是模型说的，不是原文」。 */
+export interface GoldCandidateOut {
+  subject_name: string
+  polarity: Polarity
+  facet: string
+  text: string
+  quote: string
+  char_start: number | null
+  char_end: number | null
+}
+
+export interface GoldContextOut {
+  document_id: string
+  title: string | null
+  body: string
+  in_gold_set: boolean
+  model_output_seen: boolean
+  labels: GoldLabelOut[]
+  candidates: GoldCandidateOut[]
+}
+
+export interface GoldLabelIn {
+  quote: string
+  polarity: Polarity
+  subject_type?: string
+  subject_name?: string | null
+  expected_poi_id?: string | null
+  facet?: string | null
+  note?: string | null
+}
+
+export interface LocalPoiOut {
+  poi_id: string
+  name: string
+  label: string
+  city_name: string | null
+  parent_id: string | null
+  parent_name: string | null
+  typecode: string | null
+  address: string | null
+  is_root: boolean
+}
+
+export interface GoldScoreOut {
+  document_id: string
+  hits: number
+  gold_total: number
+  predicted_total: number
+  recall: number | null
+  precision: number | null
+  alignment_accuracy: number | null
+  unaligned: number
+  missed: string[]
+  spurious: string[]
+}
+
+export interface EvalOut {
+  sample_size: number
+  ready: boolean
+  gold_labels: number
+  gold_documents: number
+  blind_documents: number
+  hits: number
+  gold_total: number
+  predicted_total: number
+  recall: number | null
+  precision: number | null
+  alignment_accuracy: number | null
+  unaligned: number
+  misaligned: number
+  discard_ratio: number | null
+  documents: GoldScoreOut[]
+}
+
+export interface CandidatePoiOut {
+  poi_id: string
+  name: string
+  typecode: string | null
+  address: string | null
+  adcode: string | null
+  name_score: number | null
+  usable: boolean
+  reject_reason: string | null
+}
+
+export interface PendingClaimOut {
+  subject_name: string
+  subject_type: string
+  polarity: Polarity
+  facet: string
+  text: string
+  quote: string
+  char_start: number | null
+  char_end: number | null
+  quote_verdict: string | null
+}
+
+export interface AlignmentTaskOut {
+  task_id: string
+  mention_name: string
+  city_adcode: string | null
+  context_snippet: string | null
+  source_document_id: string | null
+  source_title: string | null
+  candidates: CandidatePoiOut[]
+  claims: PendingClaimOut[]
+  created_at: string
+}
+
+export interface ClaimOut {
+  claim_id: string
+  subject_type: string
+  subject_name: string | null
+  poi_id: string | null
+  city_adcode: string | null
+  polarity: Polarity
+  facet: string
+  text: string
+  confidence: 'high' | 'single_source'
+  independent_source_count: number
+  status: string
+  first_seen_at: string
+  verify_due_at: string | null
+  evidence_count: number
+}
+
+export interface EvidenceOut {
+  quote: string
+  site: string
+  url: string | null
+  title: string | null
+  char_start: number | null
+  char_end: number | null
+}
+
+export interface ExtractionRunOut {
+  run_id: string
+  source_document_id: string
+  source_title: string | null
+  model: string
+  prompt_version: string
+  candidate_count: number
+  accepted_count: number
+  dropped_count: number
+  duration_ms: number | null
+  status: string
+  error: string | null
+  created_at: string
+}
+
+export interface PipelineStatsOut {
+  documents: number
+  groups: number
+  claims: number
+  high_confidence: number
+  evidence: number
+  extract_documents: number
+  extract_candidates: number
+  extract_accepted: number
+  extract_dropped: number
+  align_pending: number
+  align_resolved: number
+  align_discarded: number
+}
+
+export interface IngestOut {
+  document_id: string
+  duplicate: 'new' | 'repost' | 'exact'
+  site: string
+  chars: number
+  duplicate_of: string | null
+  coverage: number | null
+  group_id: string | null
+}
+
+export const listGoldDocuments = (): Promise<GoldDocumentOut[]> =>
+  request('/api/workbench/gold')
+
+export const getGoldContext = (documentId: string): Promise<GoldContextOut> =>
+  request(`/api/workbench/gold/${encodeURIComponent(documentId)}`)
+
+export const addGoldLabel = (
+  documentId: string,
+  payload: GoldLabelIn,
+): Promise<GoldLabelOut> =>
+  request(`/api/workbench/gold/${encodeURIComponent(documentId)}/labels`, jsonInit(payload))
+
+export const deleteGoldLabel = (labelId: string): Promise<void> =>
+  request(`/api/workbench/gold/labels/${encodeURIComponent(labelId)}`, { method: 'DELETE' })
+
+/**
+ * 补全一条已有标注。
+ *
+ * 标注是来回的：先照着原文把事实写下来，再去查这个提及指的是哪个景点。
+ * `setPoi` 才写 `expected_poi_id`——它要能表达「把 POI 清掉」，
+ * 也要能表达「这次不改 POI」，两者不能都用省略表示。
+ */
+export const patchGoldLabel = (
+  labelId: string,
+  payload: {
+    expected_poi_id?: string | null
+    set_poi?: boolean
+    subject_name?: string
+    facet?: string
+    note?: string
+  },
+): Promise<GoldLabelOut> =>
+  request(`/api/workbench/gold/labels/${encodeURIComponent(labelId)}`, {
+    ...jsonInit(payload),
+    method: 'PATCH',
+  })
+
+export const markGoldDone = (
+  documentId: string,
+  payload: { done: boolean; model_output_seen?: boolean; annotator?: string },
+): Promise<GoldDocumentOut> =>
+  request(`/api/workbench/gold/${encodeURIComponent(documentId)}/done`, jsonInit(payload))
+
+export const runEvaluation = (): Promise<EvalOut> => request('/api/workbench/eval')
+
+export const listAlignments = (): Promise<AlignmentTaskOut[]> =>
+  request('/api/workbench/alignments')
+
+export const resolveAlignment = (
+  taskId: string,
+  payload: { poi_id?: string | null; discard?: boolean },
+): Promise<ClaimOut | null> =>
+  request(`/api/workbench/alignments/${encodeURIComponent(taskId)}/resolve`, jsonInit(payload))
+
+export const listExtractions = (): Promise<ExtractionRunOut[]> =>
+  request('/api/workbench/extractions')
+
+export const workbenchStats = (): Promise<PipelineStatsOut> => request('/api/workbench/stats')
+
+export const searchLocalPois = (q: string, limit = 20): Promise<LocalPoiOut[]> =>
+  request(`/api/workbench/pois?q=${encodeURIComponent(q)}&limit=${limit}`)
+
+export const ingestDocument = (payload: {
+  body: string
+  title?: string
+  url?: string
+  author?: string
+  site?: string
+}): Promise<IngestOut> => request('/api/ingest', jsonInit(payload))
+
+// ─── 管线（流式）──────────────────────────────────────────────
+
+export type PipelineStep = 'extract' | 'align' | 'group' | 'merge'
+
+export interface PipelineDonePayload {
+  extract?: {
+    documents: number
+    cached: number
+    accepted: number
+    dropped: number
+    failed: { document_id: string; error: string }[]
+  }
+  align?: {
+    mentions: number
+    aligned: number
+    collapsed: number
+    pending: number
+    unresolved_subjects: number
+    failed: { mention: string; error: string }[]
+  }
+  group?: { compared: number; merged: number; groups: number }
+  merge?: { created: number; extended: number; high_confidence: number; single_source: number }
+  stats?: PipelineStatsOut
+}
+
+export type PipelineEvent =
+  | { type: 'stage'; step: PipelineStep; label: string }
+  | { type: 'progress'; step: PipelineStep; label: string; index: number; total: number }
+  | { type: 'done'; payload: PipelineDonePayload }
+  | { type: 'error'; body: ApiErrorBody }
+
+/** 管线与规划共用一套 SSE 形状，所以复用同一个分帧解析。 */
+function parsePipelineFrame(frame: string): PipelineEvent | null {
+  let name = ''
+  let data = ''
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event: ')) name = line.slice('event: '.length)
+    else if (line.startsWith('data: ')) data = line.slice('data: '.length)
+  }
+  if (!name) return null
+
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(data) as Record<string, unknown>
+  } catch {
+    return null
+  }
+
+  switch (name) {
+    case 'stage':
+      return {
+        type: 'stage',
+        step: String(payload.step ?? '') as PipelineStep,
+        label: String(payload.label ?? ''),
+      }
+    case 'progress':
+      return {
+        type: 'progress',
+        step: String(payload.step ?? '') as PipelineStep,
+        label: String(payload.label ?? ''),
+        index: Number(payload.index ?? 0),
+        total: Number(payload.total ?? 0),
+      }
+    case 'done':
+      return { type: 'done', payload: payload as PipelineDonePayload }
+    case 'error':
+      return { type: 'error', body: payload as ApiErrorBody }
+    default:
+      return null
+  }
+}
+
+/** 跑一轮管线，边跑边把进度交给调用方。跑一轮可能几分钟。 */
+export async function streamPipeline(
+  payload: { steps: PipelineStep[]; limit?: number; force?: boolean },
+  onEvent: (event: PipelineEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch('/api/pipeline/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(payload),
+      signal,
+    })
+  } catch (cause) {
+    if (signal?.aborted) return
+    onEvent({
+      type: 'error',
+      body: { message: cause instanceof Error ? cause.message : String(cause) },
+    })
+    return
+  }
+
+  if (!response.ok || !response.body) {
+    const text = await response.text()
+    let body: ApiErrorBody = { message: text || '管线没有返回可读的响应' }
+    try {
+      body = JSON.parse(text) as ApiErrorBody
+    } catch {
+      /* 不是 JSON 就用原文 */
+    }
+    onEvent({ type: 'error', body })
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const event = parsePipelineFrame(frame)
+        if (event) onEvent(event)
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 // ─── 生成（流式）──────────────────────────────────────────────
 
 export interface PlanIn {

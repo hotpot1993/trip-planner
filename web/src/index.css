@@ -71,6 +71,51 @@ body {
   border-radius: 2px;
 }
 
+/*
+ * 标注台上的两层标记。
+ *
+ * 这一页的核心问题是「人说的」与「机器说的」差在哪里，所以两层必须一眼分得开，
+ * 而且**权重不能对等**：机器那层只是待核对的提议，不该看起来像结论。
+ * 底色留给人工标注，机器那层只用一道虚线下划线。
+ *
+ * avoid 用石青、highlight 用石绿——朱砂在这里是禁用的。朱砂只标「会让计划
+ * 落空」的三类信息，一旦在标注台上用掉，它在真正该报警的地方就不再是信号。
+ */
+.mark-avoid {
+  background-color: var(--color-azurite-soft);
+  box-shadow: inset 0 -2px 0 var(--color-azurite);
+}
+
+.mark-highlight {
+  background-color: var(--color-malachite-soft);
+  box-shadow: inset 0 -2px 0 var(--color-malachite);
+}
+
+.mark-machine {
+  text-decoration: underline dashed var(--color-ink-3);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 6px;
+}
+
+/*
+ * 批注序号（正文里的 1、2、3，对应批注栏里的第几条）。
+ *
+ * 用伪元素而不是子节点，是为了**不污染选区文本**：`Range.toString()` 会把
+ * 元素里的文字算进选区，序号若作为子节点存在，跨过已标注段落选出来的字符串
+ * 就会比原文多出几个数字，偏移校验随之失败，划选失效。
+ * 伪元素的内容不进 DOM 文本，选区因此仍然逐字等于原文。
+ */
+.mark-avoid[data-note]::after,
+.mark-highlight[data-note]::after {
+  content: attr(data-note);
+  margin-left: 1px;
+  vertical-align: super;
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: var(--color-ink-3);
+  user-select: none;
+}
+
 /* 尊重减少动效的偏好 */
 @media (prefers-reduced-motion: reduce) {
   *,
