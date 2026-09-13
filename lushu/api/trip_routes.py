@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -167,6 +168,45 @@ class TripWeatherOut(BaseModel):
     start_date: date
     end_date: date
     cities: list[CityWeatherOut]
+
+
+class BookingChannelOut(BaseModel):
+    """预约渠道。规则必须有渠道，否则用户知道要预约也无处可去。"""
+
+    name: str
+    kind: str  # web | miniapp | official_account | phone
+    url: str | None = None
+
+
+class BookingAlertOut(BaseModel):
+    """预约清单上的一条。
+
+    `headline` 是给用户看的一行结论（「3 天后放票」「放票日已过 2 天，立刻确认」），
+    它由领域层算好，界面不再自己拼——拼文案的地方一多，
+    同一件事在不同页面上就会有两种说法。
+    """
+
+    poi_id: str
+    poi_name: str
+    city_name: str | None
+    visit_date: date
+    release_date: date | None
+    days_until_release: int | None
+    urgency: str  # overdue | today | soon | later
+    headline: str
+    release_time: str | None
+    channels: list[BookingChannelOut]
+    requires_real_name: bool | None
+    id_required_note: str | None
+
+
+class TripBookingOut(BaseModel):
+    trip_id: str
+    today: date
+    alerts: list[BookingAlertOut]
+    # 行程里有规则、但规则还是草案（未经复核）的景点名。
+    # 「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
+    pending_review: list[str]
 
 
 class TripDetailOut(BaseModel):
@@ -496,6 +536,54 @@ async def trip_weather(trip_id: str) -> TripWeatherOut:
             )
             for forecast in forecasts
         ],
+    )
+
+
+@router.get("/trips/{trip_id}/booking", response_model=TripBookingOut, summary="预约清单")
+def trip_booking(
+    trip_id: str, today: Annotated[date | None, Query()] = None
+) -> TripBookingOut:
+    """这份行程的预约清单，按距今剩余天数倒排。
+
+    真正有用的不是「这个景点要预约」，而是「还有 3 天放票，现在就得盯着」（Q11）。
+
+    `pending_review` 是**必须与清单一同返回**的东西：草案状态的规则被静默跳过
+    （Q10 的硬门禁），少提醒是对的，但不能让用户以为那个景点不用预约——
+    「清单里没有」与「规则还没复核」在用户眼里是同一件事，除非我们说出来。
+    """
+    from lushu.services import booking_store
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    alerts = booking_store.alerts_for_trip(trip_id, today=today)
+    pending = booking_store.pending_rule_pois(trip_id)
+
+    return TripBookingOut(
+        trip_id=trip_id,
+        today=(today or date.today()).isoformat(),
+        alerts=[
+            BookingAlertOut(
+                poi_id=alert.poi_id,
+                poi_name=alert.poi_name,
+                city_name=alert.city_name,
+                visit_date=alert.visit_date.isoformat(),
+                release_date=alert.release_date.isoformat() if alert.release_date else None,
+                days_until_release=alert.days_until_release,
+                urgency=alert.urgency.value,
+                headline=alert.headline,
+                release_time=alert.release_time,
+                channels=[
+                    BookingChannelOut(name=item.name, kind=item.kind.value, url=item.url)
+                    for item in alert.channels
+                ],
+                requires_real_name=alert.requires_real_name,
+                id_required_note=alert.id_required_note,
+            )
+            for alert in alerts
+        ],
+        pending_review=pending,
     )
 
 

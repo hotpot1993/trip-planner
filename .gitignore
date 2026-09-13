@@ -37,3 +37,7 @@ Thumbs.db
 
 # 界面截图的临时落点（用 scripts/shot.mjs 生成，不进版本库）
 .shots/
+
+# 调研时抓下来的原始页面（脚本的草稿区，不进版本库）
+_raw/
+tools/

@@ -166,3 +166,67 @@ class TestBookingCalendar:
         response = api_client.get(f"/api/trips/{trip_id}/booking.ics")
         assert response.status_code == 200
         assert response.text.rstrip().endswith("END:VCALENDAR")
+
+
+class TestBookingList:
+    def test_lists_the_alert_with_everything_needed_to_act(
+        self, api_client, stub_cities
+    ) -> None:
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking?today=2026-09-20").json()
+
+        assert len(payload["alerts"]) == 1
+        alert = payload["alerts"][0]
+        assert alert["poi_name"] == "故宫博物院"
+        assert alert["release_date"] == "2026-09-24"
+        assert alert["days_until_release"] == 4
+        assert alert["urgency"] == "later"  # 3 天以内才算紧急
+        # 一行结论由领域层算好，界面不自己拼
+        assert alert["headline"] == "4 天后放票"
+        assert alert["channels"][0]["name"] == "官方小程序"
+        assert alert["requires_real_name"] is True
+
+    def test_within_three_days_is_soon(self, api_client, stub_cities) -> None:
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking?today=2026-09-22").json()
+        assert payload["alerts"][0]["urgency"] == "soon"
+
+    def test_release_day_itself_is_today(self, api_client, stub_cities) -> None:
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking?today=2026-09-24").json()
+        alert = payload["alerts"][0]
+        assert alert["urgency"] == "today"
+        # 放票时刻必须出现在这一行结论里——它是这一天唯一要紧的信息
+        assert alert["headline"] == "今天 20:00 放票"
+
+    def test_overdue_is_reported_as_such(self, api_client, stub_cities) -> None:
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=True)
+
+        # 放票日是 9-24；把「今天」挪到 9-25 就成了放票日已过
+        payload = api_client.get(f"/api/trips/{trip_id}/booking?today=2026-09-25").json()
+        assert payload["alerts"][0]["urgency"] == "overdue"
+        assert "立刻确认" in payload["alerts"][0]["headline"]
+
+    def test_pending_review_is_reported_separately(self, api_client, stub_cities) -> None:
+        """清单里没有 ≠ 不用预约。这两件事必须在同一个响应里说清。"""
+        trip_id = _trip_with_gugong(api_client, stub_cities)
+        poi_id = _poi_and_visit(api_client, trip_id)
+        _rule(poi_id, reviewed=False)
+
+        payload = api_client.get(f"/api/trips/{trip_id}/booking").json()
+        assert payload["alerts"] == []
+        assert payload["pending_review"] == ["故宫博物院"]
+
+    def test_missing_trip_is_404(self, api_client, stub_cities) -> None:
+        assert api_client.get("/api/trips/trip_nope/booking").status_code == 404

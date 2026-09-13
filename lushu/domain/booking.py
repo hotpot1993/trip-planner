@@ -143,6 +143,9 @@ class BookingAlert:
     channels: tuple[Channel, ...]
     requires_real_name: bool | None
     city_name: str | None = None
+    # 「每个账号最多添加 5 名常用观众」这类要求。到了要抢票的那一刻才知道，
+    # 就来不及了——它必须在清单上，与放票时刻一起出现。
+    id_required_note: str | None = None
 
     @property
     def headline(self) -> str:
@@ -201,6 +204,7 @@ def build_alert_list(
                 channels=rule.channels,
                 requires_real_name=rule.requires_real_name,
                 city_name=visit.city_name,
+                id_required_note=rule.id_required_note,
             )
         )
 
