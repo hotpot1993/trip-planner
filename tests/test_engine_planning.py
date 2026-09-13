@@ -56,6 +56,96 @@ def _typical_events() -> list[dict]:
     ]
 
 
+# ─── 候选池接进景点搜索 ──────────────────────────────────────
+
+
+class TestSpotSourceWiring:
+    """`spot_source` 真的接到了引擎上吗。
+
+    这条链有三跳（`trip_service` → `run_plan` → `stream_plan` → 替换引擎的
+    搜索函数），任何一跳上参数被改名或漏掉，**行为都会静默退回纯高德搜索**——
+    没有报错，只是网友推荐过的地方不再优先。所以每一跳都要有一条会红的测试。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_search(self):
+        yield
+        from lushu.engine import pool_search
+
+        pool_search.install(None)
+
+    async def test_a_provider_is_installed_before_the_engine_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lushu.engine import pool_search
+        from third_party.floattrip.planning import graph as engine_graph
+        from third_party.floattrip.planning import nodes
+
+        seen: list[object] = []
+
+        async def fake(query: str, **overrides: Any):
+            # 引擎开始跑的那一刻，搜索函数应当已经被换掉
+            seen.append(nodes.fetch_city_spots_async)
+            yield {"type": "result", "success": True, "plan": FAKE_PLAN}
+
+        monkeypatch.setattr(engine_graph, "run_stream", fake)
+
+        async for _ in stream_plan("去南京", spot_source=lambda _city: []):
+            pass
+
+        assert seen, "引擎没被跑到"
+        assert seen[0] is not pool_search._state["original"], (
+            "给了候选池，引擎却还是原来那个纯高德搜索——参数在哪一跳被漏掉了"
+        )
+
+    async def test_without_a_provider_the_engine_keeps_its_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lushu.engine import pool_search
+        from third_party.floattrip.planning import graph as engine_graph
+        from third_party.floattrip.planning import nodes
+
+        # 先换成带池子的，再规划一次**不带**的：不能残留上一次的状态
+        pool_search.install(lambda _city: [])
+
+        seen: list[object] = []
+
+        async def fake(query: str, **overrides: Any):
+            seen.append(nodes.fetch_city_spots_async)
+            yield {"type": "result", "success": True, "plan": FAKE_PLAN}
+
+        monkeypatch.setattr(engine_graph, "run_stream", fake)
+
+        async for _ in stream_plan("去南京"):
+            pass
+
+        assert seen[0] is pool_search._state["original"], "没给池子却换了搜索函数"
+
+    async def test_the_planning_entry_passes_the_pool(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """第一跳：规划入口必须把候选池交出去。
+
+        跑到「引擎返回失败」就停——这一跳要钉的是**有没有传**，
+        不是真去排队（那要 API Key 与网络）。
+        """
+        from lushu.services import candidate_pool, trip_service
+
+        captured: dict[str, Any] = {}
+
+        async def fake_run_plan(query: str, **overrides: Any) -> PlanOutcome:
+            captured.update(overrides)
+            return PlanOutcome(success=False, missing_fields=["出行需求"])
+
+        monkeypatch.setattr(trip_service, "run_plan", fake_run_plan)
+        monkeypatch.setattr(trip_service, "_require_engine_config", lambda: None)
+
+        with pytest.raises(trip_service.MissingInputError):
+            await trip_service.plan_and_save(trip_service.PlanRequest(query="去南京"))
+
+        assert captured["spot_source"] is candidate_pool.pool_pois
+
+
 # ─── 事件分流 ────────────────────────────────────────────────
 
 
