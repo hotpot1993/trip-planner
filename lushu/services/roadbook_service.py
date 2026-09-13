@@ -26,6 +26,7 @@ from html import escape
 
 from lushu.domain.geo import distance_m
 from lushu.domain.roadbook import (
+    NEEDS_LEG_METRES,
     Roadbook,
     RoadbookBooking,
     RoadbookDay,
@@ -41,13 +42,11 @@ SPEEDS = {"walk": 4.5, "bike": 12.0, "metro": 25.0, "bus": 18.0, "taxi": 22.0, "
 
 # 超过这个距离就不建议走了，改推地铁或打车。
 #
-# 取 1500 米（约二十分钟）：一公里出头的步行在城市里毫不稀奇。
-#
-# **这个数必须与 `domain/roadbook.py` 的 `NEEDS_LEG_METRES` 一致**——
-# 那一条是契约里的「写着步行但这么远，现场会很意外」。两边取不同的数，
-# 就会出现「估值器自己产出的路段被契约判为可疑」这种自相矛盾。
-# 一处判断只能有一个数字。
-WALK_LIMIT_M = 1500.0
+# **它不是一个独立的数**：就是 `domain/roadbook.py` 的 `NEEDS_LEG_METRES`
+# ——那一条是契约里的「写着步行但这么远，现场会很意外」。原先这里抄了一个
+# 1500.0 并在注释里要求「必须与那边一致」，现在直接指向它：一处判断只能有
+# 一个数字，而「要求两处保持一致」的注释迟早会被忽略。
+WALK_LIMIT_M = NEEDS_LEG_METRES
 
 # 高德导航深链。设计说从 travel-plan-viz 的 map.js 借构造函数，
 # 但那个仓库没进本项目（见 docs/M6-STATUS.md），这里直接按高德 URI API 拼。
@@ -116,6 +115,45 @@ def estimate_leg(left: _Point, right: _Point) -> RoadbookLeg | None:
     )
 
 
+def _stored_leg(
+    current: sqlite3.Row, following: sqlite3.Row, left: _Point, right: _Point
+) -> RoadbookLeg | None:
+    """天项上存着的**真实**路段；没有或已经失效就返回 None（退回估算）。
+
+    `leg_to_item_id` 是自失效的键：它记下这条路段通向哪一项。行程一改
+    （插入、删除、重排），键就对不上，这里自然退回估算——不需要任何
+    「行程变了要清缓存」的额外记账，那种记账迟早会漏。
+
+    坐标用传进来的 `_Point` 而不是天项那两列：历史行程的景点坐标在 `poi`
+    表里（迁移 10 才让天项自己记），直接用列会拼出一条坐标是 None 的导航链接。
+
+    真实路段**不带「估算」那句提醒**：那句话是给估算用的，挂在真数据上
+    会让用户以为连这个也不准。
+    """
+    if current["leg_to_item_id"] != following["id"] or not current["leg_mode"]:
+        return None
+    if not (left.located and right.located):
+        return None
+    mode = current["leg_mode"]
+    return RoadbookLeg(
+        mode=mode,
+        distance_m=current["leg_distance_m"],
+        duration_min=current["leg_duration_min"],
+        from_name=left.name,
+        to_name=right.name,
+        nav_url=NAV_ROUTE.format(
+            flng=left.lng,
+            flat=left.lat,
+            fname=escape(left.name),
+            tlng=right.lng,
+            tlat=right.lat,
+            tname=escape(right.name),
+            mode={"walk": "walk", "metro": "bus", "taxi": "car"}.get(mode, "walk"),
+        ),
+        note=None,
+    )
+
+
 def _seconds(value: str | None) -> int | None:
     if not value or ":" not in value:
         return None
@@ -125,10 +163,17 @@ def _seconds(value: str | None) -> int | None:
     return int(head) * 3600 + int(tail) * 60
 
 
-def _sort_key(row: sqlite3.Row) -> tuple[int, int]:
-    """按时刻排，没有时刻的排在当天最后——它们本来就是「有空再说」的那些。"""
+def item_sort_key(row: sqlite3.Row) -> tuple[int, int, int]:
+    """天项在一天里的先后。**路书与路段规划必须用同一个。**
+
+    按时刻排，没有时刻的排在当天最后——它们本来就是「有空再说」的那些。
+    同刻按 `seq`：那是行程编辑器里的顺序，也是唯一的稳定依据。
+    原先只按时刻，同刻的顺序取决于 `SELECT *` 不带 ORDER BY 时行的物理顺序，
+    那是实现细节——**把排序建在存储布局上**，换个 SQLite 版本就可能变，
+    而路段会因此挂到错误的一对端点之间，页面上完全看不出来。
+    """
     seconds = _seconds(row["start_time"])
-    return (1 if seconds is None else 0, seconds or 0)
+    return (1 if seconds is None else 0, seconds or 0, row["seq"] or 0)
 
 
 def _poi_map(conn: sqlite3.Connection, poi_ids: list[str]) -> dict[str, sqlite3.Row]:
@@ -206,7 +251,7 @@ def assemble(
             items = active.execute(
                 "SELECT * FROM day_item WHERE day_id = ?", (day["id"],)
             ).fetchall()
-            items = sorted(items, key=_sort_key)
+            items = sorted(items, key=item_sort_key)
             poi_ids = [row["poi_id"] for row in items if row["poi_id"]]
             pois = _poi_map(active, poi_ids)
             insights = _insight_map(active, poi_ids)
@@ -241,7 +286,10 @@ def assemble(
                 points.append(_Point(name=title, lat=lat, lng=lng))
 
             legs = tuple(
-                estimate_leg(points[index], points[index + 1])
+                _stored_leg(
+                    items[index], items[index + 1], points[index], points[index + 1]
+                )
+                or estimate_leg(points[index], points[index + 1])
                 for index in range(max(len(points) - 1, 0))
             )
             stay = stay_by_id.get(day["city_stay_id"])

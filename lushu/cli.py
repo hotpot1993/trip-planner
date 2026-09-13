@@ -318,6 +318,12 @@ def _register_trip(sub) -> None:
     coords.add_argument("--pause", type=float, default=None, help="每次搜索之间歇几秒，默认 0.4")
     coords.set_defaults(_handler=_cmd_trip_coords)
 
+    legs = actions.add_parser("legs", help="把路段查成真实距离（高德路径规划）")
+    legs.add_argument("trip_id", nargs="?", help="行程 id，不给就处理全部行程")
+    legs.add_argument("--apply", action="store_true", help="写进库里；不给就只报查到的结果")
+    legs.add_argument("--pause", type=float, default=None, help="每次请求之间歇几秒，默认 0.4")
+    legs.set_defaults(_handler=_cmd_trip_legs)
+
     trip.set_defaults(_handler=lambda _args: _usage(trip))
 
 
@@ -378,6 +384,66 @@ def _cmd_trip_coords(args: argparse.Namespace) -> int:
     changed = meal_coords.apply_fixes(report.fixes)
     print()
     print(f"已写入 {len(changed)} 个天项。重新跑 ls export 让路书里的路段说明补上。")
+    return 0
+
+
+def _cmd_trip_legs(args: argparse.Namespace) -> int:
+    """把路段查成真实距离。
+
+    原先路书里的路段全是直线估算，页面上如实写着「直线距离估算，实际路程更长」。
+    真实步行距离通常是直线的 1.3 倍——**写着「步行 1200 米」而实际要走 1800 米**，
+    就是设计里说的「现场会很意外」。
+
+    为什么要有这么一条命令、而不是导出时现查：路书是确认后导出的只读交付物，
+    导出这一步现在是纯粹的读库。让导出去联网会把它变成慢、不确定、网断了就
+    导不出的操作。
+    """
+    from lushu.services import leg_planner
+
+    slots = leg_planner.pending_legs(trip_id=args.trip_id)
+    scope = args.trip_id or "全部行程"
+    print(f"要查的路段：{len(slots)} 段（{scope}）")
+    if not slots:
+        print()
+        print("没有要查的。行程改过之后路段会自动失效，那时再跑一次。")
+        return 0
+
+    interval = leg_planner.PAUSE_SECONDS if args.pause is None else args.pause
+    print(f"逐段问高德（步行 / 驾车），每次间隔 {interval} 秒")
+    print()
+
+    report = leg_planner.plan_legs(slots, pause=interval)
+    for fix in report.fixes:
+        slot = fix.slot
+        head = f"{slot.day_date} {slot.from_title} → {slot.to_title}"
+        if fix.resolved and fix.plan is not None:
+            plan = fix.plan
+            mode = "步行" if plan.mode == "walk" else "驾车"
+            # 与直线估算法比一比：差多少一眼看得见，估算有多不准也就看得见
+            delta = plan.distance_m - slot.straight_m
+            ratio = plan.distance_m / slot.straight_m if slot.straight_m else 0
+            print(f"  ✅ {head}")
+            print(
+                f"      {mode} {plan.distance_m} 米 / {plan.duration_min} 分钟"
+                f"（直线 {slot.straight_m:.0f} 米，实际是它的 {ratio:.2f} 倍，多 {delta:.0f} 米）"
+            )
+        else:
+            print(f"  —— {head}")
+            print(f"      {fix.reason}")
+
+    print()
+    print(f"查到 {len(report.resolved)} 段，失败 {len(report.unresolved)} 段")
+
+    if not args.apply:
+        if report.resolved:
+            print()
+            print("还没有写库。加 --apply 写进天项，再重新导出路书。")
+            print("写进去的路段带一个自失效的键：行程一改就对不上，自动退回估算。")
+        return 0
+
+    changed = leg_planner.apply_fixes(report.fixes)
+    print()
+    print(f"已写入 {len(changed)} 段。重新跑 ls export 让路书里换成真实距离。")
     return 0
 
 

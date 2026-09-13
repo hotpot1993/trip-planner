@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .connection import connect
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 # ─── 迁移 1：初始表结构 ────────────────────────────────────────
@@ -538,6 +538,28 @@ ALTER TABLE day_item ADD COLUMN lat_gcj02 REAL;
 ALTER TABLE day_item ADD COLUMN lng_gcj02 REAL;
 """
 
+# ─── 11：路段的真实距离 ─────────────────────────────────────────
+#
+# 路书里「这座博物馆到那家店怎么走」原先只有直线距离估算，页面上如实写着
+# 「直线距离估算，实际路程更长」。那是诚实的，但不等于够用：真实步行距离
+# 通常是直线的 1.3 倍，**写着「步行 1200 米」而实际要走 1800 米**，
+# 就是设计里说的「现场会很意外」。
+#
+# 为什么不导出时现查：路书是**确认后导出的只读交付物**，导出这一步现在是
+# 纯粹的读库（ADR-0006 的整套取舍都建立在「不必联网」上）。让导出去联网会
+# 把它变成慢、不确定、且网断了就导不出的操作。所以照 `ls trip coords` 与
+# `ls verify scan` 的先例：先跑一条命令查好写进库，导出照旧只读库。
+#
+# `leg_to_item_id` 是**自失效的键**：它记下这条路段通向哪一项。行程一改
+# （插入、删除、重排），键就对不上，读的时候自然退回估算——不需要任何
+# 「行程变了要清缓存」的额外记账，那种记账迟早会漏。
+_MIGRATION_11 = """
+ALTER TABLE day_item ADD COLUMN leg_mode TEXT;
+ALTER TABLE day_item ADD COLUMN leg_distance_m INTEGER;
+ALTER TABLE day_item ADD COLUMN leg_duration_min INTEGER;
+ALTER TABLE day_item ADD COLUMN leg_to_item_id TEXT;
+"""
+
 _MIGRATIONS: dict[int, str] = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -549,6 +571,7 @@ _MIGRATIONS: dict[int, str] = {
     8: _MIGRATION_8,
     9: _MIGRATION_9,
     10: _MIGRATION_10,
+    11: _MIGRATION_11,
 }
 
 
