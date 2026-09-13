@@ -573,6 +573,113 @@ class ItemInsightsOut(BaseModel):
     avoids: list[InsightOut]
 
 
+class ItemCoverageOut(BaseModel):
+    """一个排进行程的地方，以及有没有人推荐过它。"""
+
+    poi_id: str
+    title: str
+    city_adcode: str | None
+    city_name: str | None
+    recommended: bool
+    claim_count: int
+    booking_required: bool | None
+
+
+class TripCoverageOut(BaseModel):
+    """这份行程里，有多少地方是网友真的推荐过的。
+
+    设计 5.1 的封闭世界约束是「排程不得引入候选池之外的景点」。候选池**还没有
+    接进排程的景点搜索**（那要改 vendored 的节点），所以现在硬性拒绝整份行程
+    会把每一份都毙掉。有用的是如实报出来。
+    """
+
+    trip_id: str
+    total: int
+    recommended: int
+    ratio: float | None
+    unresolved: int
+    items: list[ItemCoverageOut]
+
+
+@router.get("/trips/{trip_id}/roadbook.html", summary="路书（单文件 HTML）")
+def trip_roadbook(trip_id: str) -> Response:
+    """把这份行程导出成单个 HTML 文件：手机优先、离线可读。
+
+    设计第八节说「生成后必须跑一次契约校验，有错误必须修复后重跑」。
+    这里**有错误就返回 422**，不产出一份到了当地打不开的路书——
+    那比没有更糟，人会以为带上了。校验的提醒项不影响下载。
+    """
+    from urllib.parse import quote
+
+    from lushu.domain.roadbook import errors, validate
+    from lushu.services import roadbook_render as render
+    from lushu.services import roadbook_service
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    book, _warnings = roadbook_service.assemble(trip_id)
+    problems = validate(book)
+    fatal = errors(problems)
+    if fatal:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="路书没通过契约校验：" + "；".join(str(item) for item in fatal),
+        )
+
+    html = render.render(book)
+    if render.external_resources(html):
+        # 兜底：渲染器自己保证零外部加载，这里再确认一次。
+        # 真出现了说明渲染器有 bug，宁可报错也不要发一份离线打不开的东西。
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="路书里有会自动加载的外部资源，不满足离线可读",
+        )
+
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"roadbook.html\"; filename*=UTF-8''{quote(book.name)}.html"
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/trips/{trip_id}/coverage", response_model=TripCoverageOut, summary="行程的知识覆盖")
+def trip_coverage(trip_id: str) -> TripCoverageOut:
+    """行程里的景点，哪些有人写过、哪些只是地图上恰好有。"""
+    from lushu.services import coverage as coverage_service
+
+    stored = trip_service.get_trip(trip_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"行程不存在：{trip_id}")
+
+    data = coverage_service.coverage_for_trip(trip_id)
+    return TripCoverageOut(
+        trip_id=trip_id,
+        total=data.total,
+        recommended=data.recommended,
+        ratio=data.ratio,
+        unresolved=data.unresolved,
+        items=[
+            ItemCoverageOut(
+                poi_id=item.poi_id,
+                title=item.title,
+                city_adcode=item.city_adcode,
+                city_name=item.city_name,
+                recommended=item.recommended,
+                claim_count=item.claim_count,
+                booking_required=item.booking_required,
+            )
+            for item in data.items
+        ],
+    )
+
+
 @router.get("/trips/{trip_id}/insights", response_model=TripInsightsOut, summary="行程上的软经验")
 def trip_insights(trip_id: str) -> TripInsightsOut:
     """把知识库里挂在这份行程各个景点上的结论取出来。

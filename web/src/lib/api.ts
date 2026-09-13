@@ -298,6 +298,36 @@ export const fetchTripWeather = (tripId: string): Promise<TripWeatherOut> =>
 export const resolveCity = (name: string): Promise<CityOut[]> =>
   request(`/api/cities/resolve?name=${encodeURIComponent(name)}`)
 
+// ─── 行程的知识覆盖 ──────────────────────────────────────────
+
+export interface ItemCoverageOut {
+  poi_id: string
+  title: string
+  city_adcode: string | null
+  city_name: string | null
+  recommended: boolean
+  claim_count: number
+  booking_required: boolean | null
+}
+
+export interface TripCoverageOut {
+  trip_id: string
+  total: number
+  recommended: number
+  /** 一个景点都对不上实体时算不出来——是 `null` 不是 0。 */
+  ratio: number | null
+  unresolved: number
+  items: ItemCoverageOut[]
+}
+
+/** 行程里的景点，哪些有人写过、哪些只是地图上恰好有。 */
+export const fetchTripCoverage = (tripId: string): Promise<TripCoverageOut> =>
+  request(`/api/trips/${encodeURIComponent(tripId)}/coverage`)
+
+/** 路书导出的下载地址。单文件 HTML，可离线打开。 */
+export const roadbookUrl = (tripId: string): string =>
+  `/api/trips/${encodeURIComponent(tripId)}/roadbook.html`
+
 // ─── 行程上的软经验 ──────────────────────────────────────────
 
 export interface InsightOut {

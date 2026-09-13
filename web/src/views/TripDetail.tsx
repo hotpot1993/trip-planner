@@ -8,11 +8,14 @@ import {
   ApiError,
   confirmTrip,
   deleteTrip,
+  fetchTripCoverage,
   fetchTripInsights,
   fetchTripWeather,
   getTrip,
   refreshTransfers,
+  roadbookUrl,
   updateStays,
+  type TripCoverageOut,
   type TripDetailOut,
   type TripInsightsOut,
   type TripWeatherOut,
@@ -29,6 +32,7 @@ export function TripDetail({ tripId }: { tripId: string }) {
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [insights, setInsights] = useState<TripInsightsOut | null>(null)
+  const [coverage, setCoverage] = useState<TripCoverageOut | null>(null)
 
   const reload = useCallback(() => {
     setError(null)
@@ -43,6 +47,9 @@ export function TripDetail({ tripId }: { tripId: string }) {
     fetchTripInsights(tripId)
       .then(setInsights)
       .catch(() => setInsights(null))
+    fetchTripCoverage(tripId)
+      .then(setCoverage)
+      .catch(() => setCoverage(null))
   }, [tripId])
 
   useEffect(reload, [reload])
@@ -93,7 +100,12 @@ export function TripDetail({ tripId }: { tripId: string }) {
           实心圆点是已经排好的天，空心是还没安排的。总天数由各城市停留天数相加得出。
           城际转移画在它落到的那一天里。
         </p>
-        <RouteRail stays={trip.stays} transfers={trip.transfers} insights={insights ?? undefined} />
+        <CoverageLine coverage={coverage} tripId={trip.id} />
+        <RouteRail
+          stays={trip.stays}
+          transfers={trip.transfers}
+          insights={insights ?? undefined}
+        />
       </section>
 
       <BudgetPanel budget={trip.budget} />
@@ -111,6 +123,59 @@ export function TripDetail({ tripId }: { tripId: string }) {
 }
 
 /** 重新查一遍城际车次。会真的问 12306，所以要有进行中的反馈。 */
+/**
+ * 这份行程里有多少地方是网友真的推荐过的。
+ *
+ * 设计 5.1 的封闭世界约束是「排程不得引入候选池之外的景点」，但候选池
+ * **还没有接进排程的景点搜索**（那要改 vendored 的节点）。现在硬性拒绝
+ * 整份行程会把每一份都毙掉，所以如实报出来——这条信息本身就是价值：
+ * 一个只是地图上有的地方，没有任何人说过它值得去，也不知道要注意什么。
+ *
+ * 只是地图上有的那些**点名列出来**，不在每个天项旁边挂小徽章：
+ * 一句话说清比让人去正文里找出是哪三个更有用。
+ */
+function CoverageLine({
+  coverage,
+  tripId,
+}: {
+  coverage: TripCoverageOut | null
+  tripId: string
+}) {
+  if (!coverage || !coverage.total) return null
+  const bare = coverage.items.filter((item) => !item.recommended)
+  const names = bare.map((item) => item.title)
+
+  return (
+    <section className="mb-4 space-y-1.5">
+      <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-ink-3">
+        <span>
+          行程里 {coverage.total} 个景点，
+          <span className="text-malachite">{coverage.recommended} 个有网友写过</span>
+          {bare.length ? `，${bare.length} 个只是地图上有` : ''}
+          {coverage.unresolved ? `；另有 ${coverage.unresolved} 个还没对上实体` : ''}
+        </span>
+        <a
+          href={roadbookUrl(tripId)}
+          className="rounded border border-rule px-2 py-0.5 text-ink-2 no-underline hover:border-azurite"
+        >
+          导出路书（单文件，可离线打开）
+        </a>
+      </p>
+      {names.length ? (
+        <details className="text-xs text-ink-3">
+          <summary className="cursor-pointer">
+            哪 {names.length} 个只是地图上有？
+          </summary>
+          <p className="mt-1 leading-relaxed">
+            {names.join('、')}。这些地方没有任何网友提过——没有打卡建议、
+            没有避坑提醒，也不知道要不要预约。要去的话，出发前自己查一遍。
+          </p>
+        </details>
+      ) : null}
+    </section>
+  )
+}
+
 function RefreshTransfers({ tripId, onDone }: { tripId: string; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
