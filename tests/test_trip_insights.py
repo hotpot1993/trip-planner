@@ -254,6 +254,8 @@ class TestInsightsEndpoint:
         assert item["poi_name"] == "故宫博物院"
         assert item["avoids"][0]["text"] == "只有午门能进"
         assert item["avoids"][0]["single_source"] is True
+        # 那句话由服务端出，前端只渲染（见 domain.knowledge.describe_confidence）
+        assert item["avoids"][0]["confidence_text"] == "待验证的个例（只有 1 个来源）"
 
     def test_missing_trip_is_404(
         self,

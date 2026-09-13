@@ -481,6 +481,10 @@ function ItemRow({
  * **原文照登，不改一个字**——这些是网友说过的话，任何转述都会让它
  * 从「证据」变成「我们的说法」。置信度跟着每条一起显示：
  * 「3 个独立来源」与「待验证的个例」是这份攻略可信度的全部依据。
+ *
+ * 那句话**不在这里拼**，用服务端给的 `confidence_text`。原先这里与城市页
+ * 各写了一遍同一个三元表达式，其中一份还把 2 个来源说成「只有 1 个来源」
+ * ——而门槛是 3。措辞只在 `domain.knowledge.describe_confidence` 定一次。
  */
 function InsightList({ insights }: { insights: ItemInsightsOut }) {
   const groups: [string, InsightOut[], string][] = [
@@ -496,9 +500,6 @@ function InsightList({ insights }: { insights: ItemInsightsOut }) {
             <ul className="mt-0.5 space-y-1">
               {claims.map((claim) => {
                 const due = describeDue(claim.verify_due_at)
-                const basis = claim.single_source
-                  ? '待验证的个例（只有 1 个来源）'
-                  : `${claim.independent_source_count} 个独立来源`
                 return (
                   <li
                     key={claim.claim_id}
@@ -506,7 +507,7 @@ function InsightList({ insights }: { insights: ItemInsightsOut }) {
                   >
                     <p className="text-[13px] leading-relaxed text-ink-2">{claim.text}</p>
                     <p className="data mt-0.5 text-[10px] text-ink-3">
-                      {basis}
+                      {claim.confidence_text}
                       {/* 过期不隐藏，只标注（设计 4.6）。用墨色不用朱砂：
                           朱砂留给「计划会失败」的那三件事，一条旧经验还不是。 */}
                       {due ? ` · ${due}` : ''}

@@ -1502,6 +1502,7 @@ def _cmd_align_recheck(args: argparse.Namespace) -> int:
 
 
 def _cmd_align_show(args: argparse.Namespace) -> int:
+    from lushu.domain.knowledge import describe_confidence
     from lushu.services import knowledge_store as ks
 
     claims = ks.claims_for_poi(args.poi_id)
@@ -1511,9 +1512,13 @@ def _cmd_align_show(args: argparse.Namespace) -> int:
 
     print(f"{args.poi_id} 上有 {len(claims)} 条结论：")
     for claim in claims:
-        tag = "高置信" if claim.confidence.value == "high" else "待验证个例"
-        print(f"\n  [{tag} / {claim.polarity} / {claim.facet}] {claim.text}")
-        print(f"    独立来源 {claim.independent_source_count} 个，证据 {claim.evidence_count} 条")
+        print(f"\n  [{claim.polarity} / {claim.facet}] {claim.text}")
+        # 「几个来源」这句话不在命令行另写一遍：界面与路书说的是同一句，
+        # 这里自己判一次「高置信 / 待验证个例」就有了第二个版本
+        print(
+            f"    {describe_confidence(claim.independent_source_count)}，"
+            f"证据 {claim.evidence_count} 条"
+        )
         for evidence in ks.evidence_for_claim(claim.claim_id)[:3]:
             print(f"      · {evidence['quote'][:60]}")
             print(f"        来源：{evidence['site']} {evidence['url'] or ''}")

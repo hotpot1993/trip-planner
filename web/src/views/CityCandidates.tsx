@@ -199,6 +199,10 @@ function CandidateCard({ item }: { item: CandidateOut }) {
  * 可信度的全部依据。设计里说的是「标为待验证个例而不是丢弃」——
  * 单源的说法照样显示，但要看得出它是单源。
  *
+ * 那句话**不在这里拼**，用服务端给的 `confidence_text`。原先这里与行程页
+ * 各写了一遍同一个三元表达式，其中一份还把 2 个来源说成「只有 1 个来源」
+ * ——而门槛是 3。措辞只在 `domain.knowledge.describe_confidence` 定一次。
+ *
  * 每组最多铺三条。陕西历史博物馆那样一个地方有九条结论时，全铺出来会
  * 把旁边的卡片一起挤成一条长条，「这座城市有什么可去的」反而看不见了。
  */
@@ -238,9 +242,7 @@ function ClaimGroup({
           <li key={claim.claim_id} className={`border-l-2 pl-3 ${accent}`}>
             <p className="text-sm leading-relaxed text-ink">{claim.text}</p>
             <p className="data mt-0.5 text-[10px] text-ink-3">
-              {claim.confidence === 'high'
-                ? `${claim.independent_source_count} 个独立来源`
-                : '待验证的个例（只有 1 个来源）'}
+              {claim.confidence_text}
               {dueNote(claim.verify_due_at)}
             </p>
           </li>

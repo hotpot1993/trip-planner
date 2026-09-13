@@ -29,6 +29,7 @@ from lushu.domain.roadbook import (
     NEEDS_LEG_METRES,
     Roadbook,
     RoadbookBooking,
+    RoadbookClaim,
     RoadbookDay,
     RoadbookItem,
     RoadbookLeg,
@@ -287,8 +288,20 @@ def assemble(
                         end_time=row["end_time"],
                         address=(poi["address"] if poi else None) or row["address"],
                         note=row["note"],
-                        highlights=tuple(c.text for c in claims if c.polarity == "highlight"),
-                        avoids=tuple(c.text for c in claims if c.polarity == "avoid"),
+                        highlights=tuple(
+                            RoadbookClaim(
+                                text=c.text, independent_source_count=c.independent_source_count
+                            )
+                            for c in claims
+                            if c.polarity == "highlight"
+                        ),
+                        avoids=tuple(
+                            RoadbookClaim(
+                                text=c.text, independent_source_count=c.independent_source_count
+                            )
+                            for c in claims
+                            if c.polarity == "avoid"
+                        ),
                         booking=_booking_text(active, row["poi_id"]) if row["poi_id"] else None,
                         lat_gcj02=lat,
                         lng_gcj02=lng,

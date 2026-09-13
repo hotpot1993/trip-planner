@@ -20,9 +20,11 @@ from __future__ import annotations
 
 from html import escape
 
+from lushu.domain.knowledge import describe_confidence
 from lushu.domain.roadbook import (
     Roadbook,
     RoadbookBooking,
+    RoadbookClaim,
     RoadbookDay,
     RoadbookItem,
     RoadbookLeg,
@@ -72,6 +74,7 @@ h3{font-size:.8rem;font-weight:600;margin:.7rem 0 .3rem}
   font-size:.82rem;color:var(--ink2)}
 .claims li.hl{border-color:var(--malachite)}
 .claims li.av{border-color:var(--azurite)}
+.claims li .src{color:var(--ink3);font-size:.72rem;margin-left:.35rem;white-space:nowrap}
 .leg{margin:.35rem 0 .35rem 3.6rem;font-size:.8rem;color:var(--ink2)}
 .leg a{color:var(--azurite)}
 .leg .est{color:var(--ink3)}
@@ -226,10 +229,10 @@ def _item(item: RoadbookItem) -> str:
         badges.append("<span class='badge pending'>没地址</span>")
 
     claims: list[str] = []
-    for text in item.avoids:
-        claims.append(f"<li class='av'>避坑 · {escape(text)}</li>")
-    for text in item.highlights:
-        claims.append(f"<li class='hl'>打卡 · {escape(text)}</li>")
+    for claim in item.avoids:
+        claims.append(_claim("av", "避坑", claim))
+    for claim in item.highlights:
+        claims.append(_claim("hl", "打卡", claim))
 
     return (
         "<div class='item'>"
@@ -240,6 +243,21 @@ def _item(item: RoadbookItem) -> str:
         + (f"<div class='addr'>{escape(item.note)}</div>" if item.note else "")
         + (f"<ul class='claims'>{''.join(claims)}</ul>" if claims else "")
         + "</div></div>"
+    )
+
+
+def _claim(tone: str, label: str, claim: RoadbookClaim) -> str:
+    """一条结论：内容 + **它有几个独立来源**。
+
+    来源数这段话是这一页可信度的全部依据。少了它，「三个人都这么说」与
+    「一个人这么说」在手机上长得一模一样——而这一页是断网时唯一的依据，
+    没法回主项目查。措辞由 `domain.knowledge.describe_confidence` 出，
+    与界面、命令行同源；这里只负责把它排得安静一点，别跟打卡/避坑的色条抢。
+    """
+    source = escape(describe_confidence(claim.independent_source_count))
+    return (
+        f"<li class='{tone}'>{label} · {escape(claim.text)}"
+        f"<span class='src'>{source}</span></li>"
     )
 
 

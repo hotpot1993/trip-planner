@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from lushu.domain.knowledge import describe_confidence
 from lushu.domain.planned import PlannedTrip, StaySpec
 from lushu.engine import lookup_city
 from lushu.services import transfer_service, trip_service, weather_service
@@ -563,6 +564,10 @@ class InsightOut(BaseModel):
     facet: str
     confidence: str
     independent_source_count: int
+    # 「N 个独立来源」那句话由服务端出（domain.knowledge.describe_confidence）。
+    # 让前端自己拼的话，同一句话会散在行程页、城市页、工作台各一份，
+    # 而它们迟早会不一致——原先就是那样，其中一份还把 2 个来源说成「只有 1 个」。
+    confidence_text: str
     evidence_count: int
     verify_due_at: str | None
     single_source: bool
@@ -704,6 +709,7 @@ def trip_insights(trip_id: str) -> TripInsightsOut:
             facet=item.facet,
             confidence=item.confidence,
             independent_source_count=item.independent_source_count,
+            confidence_text=describe_confidence(item.independent_source_count),
             evidence_count=item.evidence_count,
             verify_due_at=item.verify_due_at,
             single_source=item.single_source,

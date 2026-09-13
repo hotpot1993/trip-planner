@@ -336,6 +336,7 @@ export interface InsightOut {
   facet: string
   confidence: 'high' | 'single_source'
   independent_source_count: number
+  confidence_text: string
   evidence_count: number
   verify_due_at: string | null
   /** 单源的说法照样显示，但要让用户看得出它是单源。 */
@@ -510,6 +511,7 @@ export interface ClaimBriefOut {
   facet: string
   confidence: 'high' | 'single_source'
   independent_source_count: number
+  confidence_text: string
   evidence_count: number
   verify_due_at: string | null
 }
@@ -711,6 +713,7 @@ export interface ClaimOut {
   text: string
   confidence: 'high' | 'single_source'
   independent_source_count: number
+  confidence_text: string
   status: string
   first_seen_at: string
   verify_due_at: string | null

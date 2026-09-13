@@ -17,6 +17,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from lushu.domain.knowledge import describe_confidence
 from lushu.services import candidate_pool
 
 router = APIRouter(prefix="/api/cities", tags=["候选池"])
@@ -30,6 +31,8 @@ class ClaimBriefOut(BaseModel):
     facet: str
     confidence: str
     independent_source_count: int
+    # 那句话由服务端出，前端只负责排（见 `domain.knowledge.describe_confidence`）
+    confidence_text: str
     evidence_count: int
     verify_due_at: str | None
 
@@ -70,6 +73,7 @@ def _claim_brief(claim) -> ClaimBriefOut:
         facet=claim.facet,
         confidence=claim.confidence.value,
         independent_source_count=claim.independent_source_count,
+        confidence_text=describe_confidence(claim.independent_source_count),
         evidence_count=claim.evidence_count,
         verify_due_at=claim.verify_due_at,
     )

@@ -19,6 +19,7 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel
 
 from lushu.domain.booking import RuleStatus, Severity, lint_rule
+from lushu.domain.knowledge import describe_confidence
 from lushu.services import booking_store, pipeline
 from lushu.services import knowledge_store as ks
 
@@ -82,6 +83,7 @@ class ClaimOut(BaseModel):
     text: str
     confidence: str
     independent_source_count: int
+    confidence_text: str
     status: str
     first_seen_at: str
     verify_due_at: str | None
@@ -273,6 +275,7 @@ def _claim_out(claim: ks.ClaimRow) -> ClaimOut:
         text=claim.text,
         confidence=claim.confidence.value,
         independent_source_count=claim.independent_source_count,
+        confidence_text=describe_confidence(claim.independent_source_count),
         status=claim.status,
         first_seen_at=claim.first_seen_at,
         verify_due_at=claim.verify_due_at,

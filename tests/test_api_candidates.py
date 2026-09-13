@@ -104,6 +104,21 @@ class TestCityCandidates:
         assert claim["independent_source_count"] == 3
         assert claim["evidence_count"] == 1
 
+    def test_the_sentence_comes_from_the_server(self, api_client) -> None:
+        """「N 个独立来源」那句话由服务端出，前端不自己拼。
+
+        原先行程页与城市页各写了一遍同一个三元表达式——两份措辞就是两个
+        可以各自跑偏的地方，而其中一份已经把 2 个来源说成了「只有 1 个来源」。
+        """
+        _seed_city_with_claims(api_client)
+        _add_claim(poi_id="B_GUGONG", text="一条多源说法", polarity="highlight")
+
+        claim = api_client.get("/api/cities/110100/candidates").json()["candidates"][0][
+            "highlights"
+        ][0]
+
+        assert claim["confidence_text"] == "3 个独立来源"
+
     def test_empty_city_without_name_is_422_not_an_empty_pool(self, api_client) -> None:
         """库里没有、也没给城市名时，回落不了。
 

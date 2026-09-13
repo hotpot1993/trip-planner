@@ -22,6 +22,7 @@ from lushu.domain.knowledge import (
     Polarity,
     SubjectType,
     confidence_for,
+    describe_confidence,
     refresh_days_for,
 )
 
@@ -79,6 +80,41 @@ def test_genuinely_independent_sources_raise_confidence() -> None:
     )
     assert claim.distinct_source_groups == 3
     assert claim.confidence is Confidence.HIGH
+
+
+class TestDescribeConfidence:
+    """那句给用户看的话只在这里定一次，所以它自己要先说对。"""
+
+    def test_high_confidence_names_the_count(self) -> None:
+        assert describe_confidence(3) == "3 个独立来源"
+        assert describe_confidence(7) == "7 个独立来源"
+
+    def test_a_lone_source_is_an_anecdote(self) -> None:
+        assert describe_confidence(1) == "待验证的个例（只有 1 个来源）"
+
+    def test_two_sources_are_not_described_as_one(self) -> None:
+        """**2 个来源不能说成「只有 1 个来源」。**
+
+        门槛是 3，所以 2 个来源确实还不够交叉验证、仍然是待验证个例——
+        但它不是 1 个。原先界面里那句三元表达式对 2 个来源的结论说的就是
+        「只有 1 个来源」，那是在描述一个不存在的数字，而且看起来只是保守，
+        所以很难被发现。
+        """
+        text = describe_confidence(2)
+
+        assert "只有 1 个" not in text
+        assert "2 个来源" in text
+
+    def test_zero_does_not_crash(self) -> None:
+        """没有证据的结论不该入库，但显示层不能因为一个 0 就崩掉。"""
+        assert describe_confidence(0) == describe_confidence(1)
+
+    @pytest.mark.parametrize("count", [0, 1, 2, 3, 10])
+    def test_the_wording_agrees_with_the_tier(self, count: int) -> None:
+        """措辞与分级必须同源：说了「N 个独立来源」就得真是高置信。"""
+        says_high = describe_confidence(count).endswith("个独立来源")
+
+        assert says_high is (confidence_for(count) is Confidence.HIGH)
 
 
 # ─── 主体完整性 ──────────────────────────────────────────────

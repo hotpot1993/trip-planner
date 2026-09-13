@@ -93,6 +93,21 @@ class RoadbookLeg:
 
 
 @dataclass(frozen=True)
+class RoadbookClaim:
+    """路书上的一条结论。
+
+    **必须带独立来源数。** 路书是带上路的那一份：断网、在路边低头看，没法
+    回主项目查「这条是谁说的」。原先这里只有一个字符串，于是「三个人都这么
+    说」与「一个人这么说」在这一页上长得一模一样——而区分这两件事正是整个
+    信任模型存在的理由（Q34、ADR-0008）。措辞由
+    `domain.knowledge.describe_confidence` 出，这里只带数字。
+    """
+
+    text: str
+    independent_source_count: int = 1
+
+
+@dataclass(frozen=True)
 class RoadbookItem:
     """路书里的一天项。"""
 
@@ -102,10 +117,10 @@ class RoadbookItem:
     end_time: str | None = None
     address: str | None = None
     note: str | None = None
-    # 软经验原文：网友说过的话（带出处）。导出物里必须有，
-    # 否则手机上看到的只是一串地名
-    highlights: tuple[str, ...] = ()
-    avoids: tuple[str, ...] = ()
+    # 软经验原文：网友说过的话（带出处**与独立来源数**）。导出物里必须有，
+    # 否则手机上看到的只是一串地名，而且分不出「多人都说」与「一个人说」
+    highlights: tuple[RoadbookClaim, ...] = ()
+    avoids: tuple[RoadbookClaim, ...] = ()
     # 需要预约时的提醒，含渠道
     booking: str | None = None
     lat_gcj02: float | None = None

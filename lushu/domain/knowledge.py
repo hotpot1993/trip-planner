@@ -100,6 +100,26 @@ def confidence_for(independent_source_count: int) -> Confidence:
     return Confidence.SINGLE_SOURCE
 
 
+def describe_confidence(independent_source_count: int) -> str:
+    """把独立来源数说成一句人话。**措辞只在这里定一次。**
+
+    行程页、城市页、工作台、路书、命令行都要说同一句话。原先界面里各写了一遍
+    三元表达式，措辞是「高置信 → N 个独立来源，否则 → 待验证的个例（只有 1 个
+    来源）」。**那句话对 2 个来源的结论是假的**：门槛是
+    `MIN_INDEPENDENT_SOURCES = 3`，2 个来源确实还不够交叉验证，但它不是 1 个。
+    说成「只有 1 个」就是在描述一个不存在的数字——而这类假话最难发现，
+    因为它看起来只是保守。
+
+    入参只有来源数、不另收一个置信度：级是由数推出来的（`confidence_for`），
+    两个入参就有传得不一致的可能，而那时界面会显示一个与数字矛盾的标签。
+    """
+    if independent_source_count >= MIN_INDEPENDENT_SOURCES:
+        return f"{independent_source_count} 个独立来源"
+    if independent_source_count <= 1:
+        return "待验证的个例（只有 1 个来源）"
+    return f"待验证的个例（{independent_source_count} 个来源，未达交叉验证门槛）"
+
+
 @dataclass(frozen=True)
 class ClaimSubject:
     """结论的主体。按类型三选一，构造时即校验，避免出现半个主体。"""

@@ -108,6 +108,29 @@ def _seed(db: Path, *, with_claims: bool = False, with_transfer: bool = False) -
                 first_seen_at=NOW,
                 verify_due_at=None,
             )
+            # 再挂一条**三源**的打卡：路书要能同时说清「一个人在说」与
+            # 「三个人都在说」，只造一条的话两种措辞测不全
+            for extra in ("src_2", "src_3"):
+                conn.execute(
+                    "INSERT INTO source_document (id, site, body_text, body_sha256, "
+                    "imported_at, import_kind) VALUES (?, 'manual', '正文', ?, ?, 'paste')",
+                    (extra, f"sha_{extra}", NOW),
+                )
+            ks.save_claim(
+                conn=conn,
+                subject_type="poi",
+                subject_name="故宫",
+                poi_id=POI_A,
+                polarity="highlight",
+                facet="queue",
+                text="开门就冲，八点半前进太和殿基本没人",
+                evidence=[
+                    ClaimEvidence(source_document_id=doc, quote="开门就冲")
+                    for doc in ("src_1", "src_2", "src_3")
+                ],
+                first_seen_at=NOW,
+                verify_due_at=None,
+            )
 
 
 class TestHaversine:
@@ -212,7 +235,10 @@ class TestAssemble:
         book, _ = service.assemble("trip_1", conn=connect(db))
 
         first = book.days[0].items[0]
-        assert first.avoids == ("只有午门能进，北门只出不进",)
+        assert [claim.text for claim in first.avoids] == ["只有午门能进，北门只出不进"]
+        # 来源数必须跟着走到路书上：这一页是带上路的那一份，分不出
+        # 「三个人都说」与「一个人说」的话，信任模型在最需要它的地方缺席
+        assert first.avoids[0].independent_source_count == 1
 
     def test_booking_rule_reaches_the_item(self, db: Path) -> None:
         _seed(db)
@@ -295,6 +321,19 @@ class TestRender:
     def test_soft_experience_appears(self, db: Path) -> None:
         html = self._html(db, with_claims=True)
         assert "只有午门能进" in html
+
+    def test_every_claim_says_how_many_sources_it_has(self, db: Path) -> None:
+        """每条结论都要说清它有几个独立来源。
+
+        这一页是带上路的那一份：断网、在路边低头看，没法回主项目查「这条是
+        谁说的」。原先它只有一个字符串，于是「三个人都这么说」与「一个人这么
+        说」在手机上长得一模一样——而区分这两件事正是整个信任模型存在的理由
+        （Q34、ADR-0008），最需要它的地方反而缺席。
+        """
+        html = self._html(db, with_claims=True)
+
+        assert "待验证的个例（只有 1 个来源）" in html
+        assert "3 个独立来源" in html
 
     def test_missing_leg_says_so(self, db: Path) -> None:
         """没有坐标的那段路如实说，不编一段看起来合理的文字。
