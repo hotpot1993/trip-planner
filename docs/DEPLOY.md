@@ -84,6 +84,14 @@ RUN python -c "...从 pyproject.toml 抽依赖写 /tmp/requirements.txt..." \
 5. Name 填 `DOCKERHUB_TOKEN`，Secret 填刚才那串
 
 配好之后随便推一次代码，或者在 GitHub 的 Actions 页面点 **Run workflow**。
+手动触发时有个 `mode` 可以选：默认 `push`（构建并推送），选 `build-only`
+则只构建不推送 —— 改完 Dockerfile 想先验证一遍、又不想动已经发布的镜像时，
+用这个。
+
+**`latest` 是按分支名给的**（`github.ref == 'refs/heads/master'`），没有用
+metadata-action 的 `is_default_branch`。原因：默认分支要是没设成 master，
+`latest` 会**静默地**不打，而 compose 拉的正是 `latest` —— 那种失败到了 NAS 上
+只表现为「拉不到镜像」，看不出原因。
 
 产出的标签有三个：
 
@@ -287,7 +295,9 @@ docker load -i trip-planner.tar
 | 基础镜像标签存不存在、支持哪些架构 | 查 Docker Hub 的 tags 接口 | `python:3.14-slim-trixie`、`node:24-trixie-slim` 都在，且都有 linux/amd64 与 linux/arm64 |
 | 基础镜像带不带 tzdata | 查 docker-library/python 的 `3.14/slim-trixie/Dockerfile` | 带（`apt-get install` 里有 `tzdata`），所以 `ENV TZ` 直接生效 |
 | workflow 里的 action 版本存不存在 | 查各仓库的 latest release | `checkout@v7`、`setup-buildx-action@v4`、`login-action@v4`、`metadata-action@v6`、`build-push-action@v7`，都在 |
+| 前端那一段到底建不建得出来 | 把版本库里 `web/` 下的 29 个文件拷进一个空目录（等于 CI checkout 出来的样子），按镜像第一段的命令走一遍 | `pnpm install --frozen-lockfile` 与 `pnpm build`（即 `tsc --noEmit && vite build`）都通过，产出的三个文件名与本地 `web/dist` **完全一致** —— 锁文件是满足的，构建是确定的 |
 | 前端产物路径对不对 | 看 `web/dist/index.html` 与 `vite.config.ts` | 资源引用是绝对路径 `/assets/...`，而 `StaticFiles` 挂在 `/`，对得上 |
+| Dockerfile 里抽取依赖那行 | 在本地原样执行那条 `python -c "...tomllib..."` | 写出的文件正好是 `pyproject.toml` 里那 8 条依赖，一行一条 |
 | 依赖清单是不是只有一处 | pip 解析出来的包与 `pyproject.toml` 声明的对得上，`sqlite-vec`、`httpx2` 等是传递依赖 | 是，`pyproject.toml` 一处，镜像不另存一份 |
 | 上线前会不会把密钥带出去 | 拿 `.env.local` 里四个真 Key 去搜整个 git 历史（71 次提交，`git log -S`） | 四个都**未命中**；历史里出现过的敏感路径只有 `.env.example` |
 | 车站缓存格式与新鲜度 | 读 `lushu/seed/rail_stations.json` | `fetched_at: 2026-09-12`，3384 站；30 天内有效，之后会自动重拉 |
